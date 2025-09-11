@@ -1,0 +1,88 @@
+const std = @import("std");
+const builtin = @import("builtin");
+
+fn addDep(
+    artifact: *std.Build.Step.Compile,
+    b: *std.Build,
+) void {
+    const has_avx2 = std.Target.x86.featureSetHas(builtin.cpu.features, .avx2);
+    if (has_avx2) {
+        const asm_step = b.addSystemCommand(&.{
+            "zig",
+            "cc",
+            "-c",
+            "src/asm_folly.S",
+            "-o",
+            "src/folly.o",
+            "-D__AVX2__",
+            // "-DFOLLY_MEMCPY_IS_MEMCPY",
+            "-mtune=native",
+            "-fno-exceptions",
+            "-g0",
+        });
+        artifact.step.dependOn(&asm_step.step);
+        artifact.addObjectFile(b.path("src/folly.o"));
+
+        const asm_step2 = b.addSystemCommand(&.{
+            "zig",
+            "cc",
+            "-c",
+            "src/asm_folly_memset.S",
+            "-o",
+            "src/folly_memset.o",
+            "-D__AVX2__",
+            // "-DFOLLY_MEMCPY_IS_MEMCPY",
+            "-mtune=native",
+            "-fno-exceptions",
+            "-g0",
+        });
+        artifact.step.dependOn(&asm_step2.step);
+        artifact.addObjectFile(b.path("src/folly_memset.o"));
+    }
+}
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+    const lib_mod = b.createModule(.{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const lib = b.addLibrary(.{
+        .linkage = .static,
+        .name = "stdx",
+        .root_module = lib_mod,
+    });
+
+    addDep(lib, b);
+    b.installArtifact(lib);
+
+    const bench_mod = b.createModule(.{
+        .root_source_file = b.path("benchmarks/bench.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    bench_mod.addImport("stdx", lib_mod);
+
+    const bench_exe = b.addExecutable(.{
+        .name = "bench",
+        .root_module = bench_mod,
+    });
+    bench_exe.linkLibrary(lib);
+    b.installArtifact(bench_exe);
+
+    const bench_cmd = b.addRunArtifact(bench_exe);
+    bench_cmd.step.dependOn(b.getInstallStep());
+    const bench_step = b.step("bench", "Run benchmarks");
+    bench_step.dependOn(&bench_cmd.step);
+
+    const lib_unit_tests = b.addTest(.{
+        .root_module = lib_mod,
+    });
+
+    const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
+
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_lib_unit_tests.step);
+}
