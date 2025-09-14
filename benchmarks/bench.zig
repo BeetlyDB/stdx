@@ -26,34 +26,59 @@ pub fn Result(comptime SAMPLE_COUNT: usize) type {
             std.debug.print("  worst: {d}ns\tmedian: {d:.2}ns\tstddev: {d:.2}ns\n\n", .{ self.worst(), self.median(), self.stdDev() });
         }
 
+        // pub fn samples(self: *const Self) []const u64 {
+        //     return self._samples[0..@min(self.iterations, SAMPLE_COUNT)];
+        // }
+
         pub fn samples(self: *const Self) []const u64 {
-            return self._samples[0..@min(self.iterations, SAMPLE_COUNT)];
+            const len = @min(self.iterations, SAMPLE_COUNT);
+            return if (len == 0) self._samples[0..0] else self._samples[0..len];
         }
+
+        // pub fn worst(self: *const Self) u64 {
+        //     const s = self.samples();
+        //     return s[s.len - 1];
+        // }
 
         pub fn worst(self: *const Self) u64 {
             const s = self.samples();
+            if (s.len == 0) return 0;
             return s[s.len - 1];
         }
 
+        // pub fn mean(self: *const Self) f64 {
+        //     const s = self.samples();
+        //
+        //     var total: u64 = 0;
+        //     for (s) |value| {
+        //         total += value;
+        //     }
+        //     return @as(f64, @floatFromInt(total)) / @as(f64, @floatFromInt(s.len));
+        // }
+
         pub fn mean(self: *const Self) f64 {
             const s = self.samples();
-
+            if (s.len == 0) return 0.0;
             var total: u64 = 0;
-            for (s) |value| {
-                total += value;
-            }
+            for (s) |value| total += value;
             return @as(f64, @floatFromInt(total)) / @as(f64, @floatFromInt(s.len));
         }
 
+        // pub fn median(self: *const Self) u64 {
+        //     const s = self.samples();
+        //     return s[s.len / 2];
+        // }
+
         pub fn median(self: *const Self) u64 {
             const s = self.samples();
+            if (s.len == 0) return 0;
             return s[s.len / 2];
         }
 
         pub fn stdDev(self: *const Self) f64 {
-            const m = self.mean();
             const s = self.samples();
-
+            if (s.len <= 1) return 0.0;
+            const m = self.mean();
             var total: f64 = 0.0;
             for (s) |value| {
                 const t = @as(f64, @floatFromInt(value)) - m;
@@ -117,6 +142,95 @@ fn TypeOfBenchmark(comptime C: type) type {
 fn resultLessThan(context: void, lhs: u64, rhs: u64) bool {
     _ = context;
     return lhs < rhs;
+}
+
+pub fn benchStdArena(allocator: Allocator, _: *Timer) !void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const a = arena.allocator();
+
+    var i: usize = 0;
+    while (i < 10000) : (i += 1) {
+        const buf = try a.alloc(u8, 256);
+        @memset(buf, 0xAA);
+        _ = arena.reset(.free_all);
+    }
+}
+
+pub fn benchStdxArena(allocator: Allocator, _: *Timer) !void {
+    var arena = stdx.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const a = arena.allocator();
+
+    var i: usize = 0;
+    while (i < 10000) : (i += 1) {
+        const buf = try a.alloc(u8, 256);
+        @memset(buf, 0xBB);
+        arena.reset();
+    }
+}
+
+pub fn benchManySmallStd(a: Allocator, _: *Timer) !void {
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const alloc = arena.allocator();
+    var i: usize = 0;
+    while (i < 100_000) : (i += 1) {
+        _ = try alloc.alloc(u8, 8);
+    }
+}
+
+pub fn benchManySmallStdx(a: Allocator, _: *Timer) !void {
+    var arena = stdx.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const alloc = arena.allocator();
+    var i: usize = 0;
+    while (i < 100_000) : (i += 1) {
+        _ = try alloc.alloc(u8, 8);
+    }
+}
+
+pub fn benchBigStd(a: Allocator, _: *Timer) !void {
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const alloc = arena.allocator();
+    var i: usize = 0;
+    while (i < 1000) : (i += 1) {
+        const buf = try alloc.alloc(u8, 1024 * 1024); // 1 MB
+        @memset(buf, 0x11);
+        _ = arena.reset(.free_all);
+    }
+}
+
+pub fn benchStdxRetain(a: Allocator, _: *Timer) !void {
+    var arena = stdx.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const alloc = arena.allocator();
+    var i: usize = 0;
+    while (i < 10_000) : (i += 1) {
+        const buf = try alloc.alloc(u8, 256);
+        @memset(buf, 0x33);
+        _ = arena.resetWithMode(.retain_capacity);
+    }
+}
+
+pub fn benchBigStdx(a: Allocator, _: *Timer) !void {
+    var arena = stdx.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const alloc = arena.allocator();
+    var i: usize = 0;
+    while (i < 1000) : (i += 1) {
+        const buf = try alloc.alloc(u8, 1024 * 1024);
+        @memset(buf, 0x22);
+        arena.reset();
+    }
 }
 
 pub fn benchMPMC(allocator: Allocator, _: *Timer) !void {
@@ -223,4 +337,20 @@ pub fn main() !void {
 
     const r4 = try run(benchRing_MT, opts);
     r4.print("LockFreeRingBuffer concurrent");
+
+    const r5 = try run(benchStdArena, opts);
+    r5.print("std.ArenaAllocator");
+
+    const r6 = try run(benchStdxArena, opts);
+    r6.print("stdx.ArenaAllocator");
+
+    const r7 = try run(benchManySmallStd, opts);
+    r7.print("std.ArenaAllocator many small");
+    const r8 = try run(benchManySmallStdx, opts);
+    r8.print("stdx.ArenaAllocator many small");
+
+    const r9 = try run(benchBigStd, opts);
+    r9.print("std.ArenaAllocator many big");
+    const r10 = try run(benchBigStdx, opts);
+    r10.print("stdx.ArenaAllocator many big");
 }

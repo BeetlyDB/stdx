@@ -6,6 +6,8 @@ const testing = std.testing;
 
 pub const SPSC = @import("spscqueue_ring_buffer.zig");
 
+pub const Time = @import("time.zig");
+
 pub const LockFreeRingBuffer = @import("folly_lock_free_ringbuffer.zig").LockFreeRingBuffer;
 
 pub const RingBuffer = @import("ring_buffer.zig").RingBuffer;
@@ -14,9 +16,19 @@ pub const MPMCQueue = @import("folly_mpmcqueue.zig").MPMCQueue;
 
 pub const ArrayList = @import("ArrayList.zig").AlignedList;
 
+pub const ArenaAllocator = @import("ArenaAllocator.zig").ArenaAllocator;
+
 pub const Pool = @import("pool.zig").Growing;
 
-pub const ThreadPool = @import("threadpool.zig").ThreadPool;
+pub const ThreadPool = @import("threadpool.zig");
+
+pub const InstrusiveLinkedList = @import("linkedlist.zig");
+
+pub const InstrusiveStack = @import("stack.zig");
+
+pub const BinaryFuse = @import("binary_fuse_filter.zig");
+
+pub const BinaryFuseu8 = BinaryFuse.BinaryFuse(u8);
 
 const native_endian = builtin.cpu.arch.endian();
 
@@ -26,7 +38,27 @@ test {
     std.testing.refAllDecls(@This());
 }
 
+pub inline fn isPowerOfTwo(comptime T: type) bool {
+    comptime switch (@typeInfo(T)) {
+        .int => return (T & (T - 1)) == 0,
+        else => return false,
+    };
+}
+
 //=====================GENERAL PURPOSE UTILS================================
+//
+//
+// Set the affinity of the current thread to the given CPU.
+pub fn setYadro(cpu: usize) void {
+    var cpu_set: std.os.linux.cpu_set_t = undefined;
+    @memset(&cpu_set, 0);
+
+    const cpu_elt = cpu / (@sizeOf(usize) * 8);
+    const cpu_mask = @as(usize, 1) << @truncate(cpu % (@sizeOf(usize) * 8));
+    cpu_set[cpu_elt] |= cpu_mask;
+
+    _ = std.os.linux.syscall3(.sched_setaffinity, @as(usize, @bitCast(@as(isize, 0))), @sizeOf(std.os.linux.cpu_set_t), @intFromPtr(&cpu_set));
+}
 
 pub inline fn copy(comptime T: type, dest: []T, source: []const T) void {
     if (builtin.link_libc) {
@@ -34,12 +66,136 @@ pub inline fn copy(comptime T: type, dest: []T, source: []const T) void {
     }
     if (comptime has_avx2) {
         _ = __folly_memcpy(
-            dest.ptr,
-            source.ptr,
+            @ptrCast(dest.ptr),
+            @ptrCast(source.ptr),
             source.len * @sizeOf(T),
         );
     } else {
         @memcpy(dest[0..source.len], source);
+    }
+}
+
+pub const Vct = struct {
+    pub const vector_len = suggestVectorLength(u8) orelse @compileError("No SIMD features available");
+    pub const zer: vector = @splat(0);
+    pub const one: vector = @splat(255);
+    pub const slash: vector = @splat('\\');
+    pub const quote: vector = @splat('"');
+};
+
+pub const vector = @Vector(Vct.vector_len, u8);
+pub const boolx32 = @Vector(32, bool);
+pub const boolx16 = @Vector(16, bool);
+pub const boolx8 = @Vector(8, bool);
+pub const boolx4 = @Vector(4, bool);
+pub const i1x32 = @Vector(32, i1);
+pub const i8x8 = @Vector(8, i8);
+pub const i8x16 = @Vector(16, i8);
+pub const i8x32 = @Vector(32, i8);
+pub const i16x4 = @Vector(4, i16);
+pub const i16x8 = @Vector(8, i16);
+pub const i32x2 = @Vector(2, i32);
+pub const i32x4 = @Vector(4, i32);
+pub const i32x8 = @Vector(8, i32);
+pub const u1x4 = @Vector(4, u1);
+pub const u1x8 = @Vector(8, u1);
+pub const u1x16 = @Vector(16, u1);
+pub const u1x32 = @Vector(32, u1);
+pub const u8x8 = @Vector(8, u8);
+pub const u8x16 = @Vector(16, u8);
+pub const u8x32 = @Vector(32, u8);
+pub const u8x64 = @Vector(64, u8);
+pub const u16x8 = @Vector(8, u16);
+pub const u32x4 = @Vector(4, u32);
+pub const i64x2 = @Vector(2, i64);
+pub const u64x2 = @Vector(2, u64);
+pub const u64x4 = @Vector(4, u64);
+
+pub inline fn lookupTable(table: vector, nibbles: vector) vector {
+    switch (comptime builtin.cpu.arch) {
+        .x86_64 => {
+            return asm (
+                \\vpshufb %[nibbles], %[table], %[ret]
+                : [ret] "=v" (-> vector),
+                : [table] "v" (table),
+                  [nibbles] "v" (nibbles),
+            );
+        },
+        .aarch64 => {
+            return asm (
+                \\tbl %[ret].16b, {%[table].16b}, %[nibbles].16b
+                : [ret] "=w" (-> vector),
+                : [table] "w" (table),
+                  [nibbles] "w" (nibbles),
+            );
+        },
+        else => @compileError("not implemented for this target"),
+    }
+}
+
+pub inline fn pack(vec1: @Vector(4, i32), vec2: @Vector(4, i32)) @Vector(8, u16) {
+    switch (comptime builtin.cpu.arch) {
+        .x86_64 => {
+            return asm (
+                \\vpackusdw %[vec1], %[vec2], %[ret]
+                : [ret] "=v" (-> @Vector(8, u16)),
+                : [vec1] "v" (vec1),
+                  [vec2] "v" (vec2),
+            );
+        },
+        else => @compileError("Intrinsic not implemented for this target"),
+    }
+}
+
+pub inline fn mulSaturatingAdd(vec1: @Vector(16, u8), vec2: @Vector(16, u8)) @Vector(8, u16) {
+    switch (comptime builtin.cpu.arch) {
+        .x86_64 => {
+            return asm (
+                \\vpmaddubsw %[vec1], %[vec2], %[ret]
+                : [ret] "=v" (-> @Vector(8, u16)),
+                : [vec1] "v" (vec1),
+                  [vec2] "v" (vec2),
+            );
+        },
+        else => @compileError("Intrinsic not implemented for this target"),
+    }
+}
+
+pub inline fn mulWrappingAdd(vec1: @Vector(8, i16), vec2: @Vector(8, i16)) @Vector(4, i32) {
+    switch (comptime builtin.cpu.arch) {
+        .x86_64 => {
+            return asm (
+                \\vpmaddwd %[vec1], %[vec2], %[ret]
+                : [ret] "=v" (-> @Vector(4, i32)),
+                : [vec1] "v" (vec1),
+                  [vec2] "v" (vec2),
+            );
+        },
+        else => @compileError("Intrinsic not implemented for this target"),
+    }
+}
+
+pub inline fn clmul(m: u64) u64 {
+    switch (comptime builtin.cpu.arch) {
+        .x86_64 => {
+            const ones: @Vector(16, u8) = @splat(0xFF);
+            return asm (
+                \\vpclmulqdq $0, %[ones], %[quotes], %[ret]
+                : [ret] "=v" (-> u64),
+                : [ones] "v" (ones),
+                  [quotes] "v" (m),
+            );
+        },
+        else => {
+            var bitmask = m;
+            bitmask ^= bitmask << 1;
+            bitmask ^= bitmask << 2;
+            bitmask ^= bitmask << 4;
+            bitmask ^= bitmask << 8;
+            bitmask ^= bitmask << 16;
+            bitmask ^= bitmask << 32;
+            return bitmask;
+        },
     }
 }
 
@@ -216,9 +372,9 @@ pub inline fn sliceAsBytes(slice: anytype) SliceAsBytesReturnType(@TypeOf(slice)
 
 inline fn eqlBytes(a: []const u8, b: []const u8) bool {
     comptime assert(use_vectors_for_comparison);
-
     if (a.len != b.len) return false;
     if (a.len == 0 or a.ptr == b.ptr) return true;
+    if (a[0] != b[0]) return false;
 
     if (a.len <= 16) {
         if (a.len < 4) {
@@ -329,10 +485,10 @@ pub fn fstatfs(fd: i32, statfs_buf: *StatFs) usize {
 /// Checks that a type does not have implicit padding.
 pub fn no_padding(comptime T: type) bool {
     comptime switch (@typeInfo(T)) {
-        .Void => return true,
-        .Int => return @bitSizeOf(T) == 8 * @sizeOf(T),
-        .Array => |info| return no_padding(info.child),
-        .Struct => |info| {
+        .void => return true,
+        .int => return @bitSizeOf(T) == 8 * @sizeOf(T),
+        .array => |info| return no_padding(info.child),
+        .@"struct" => |info| {
             switch (info.layout) {
                 .auto => return false,
                 .@"extern" => {
@@ -368,11 +524,11 @@ pub fn no_padding(comptime T: type) bool {
                 .@"packed" => return @bitSizeOf(T) == 8 * @sizeOf(T),
             }
         },
-        .Enum => |info| {
+        .@"enum" => |info| {
             return no_padding(info.tag_type);
         },
-        .Pointer => return false,
-        .Union => return false,
+        .pointer => return false,
+        .@"union" => return false,
         else => return false,
     };
 }
@@ -401,8 +557,8 @@ pub inline fn move(comptime T: type, dest: []T, source: []const T) void {
     }
     if (comptime has_avx2) {
         _ = __folly_memcpy(
-            dest.ptr,
-            source.ptr,
+            @ptrCast(dest.ptr),
+            @ptrCast(source.ptr),
             source.len * @sizeOf(T),
         );
     } else {
