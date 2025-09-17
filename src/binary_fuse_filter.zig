@@ -180,7 +180,7 @@ pub fn BinaryFuse(comptime T: type) type {
                 return;
             }
 
-            var arena = ArenaAllocator.init(alloc);
+            var arena = std.heap.ArenaAllocator.init(alloc);
             defer arena.deinit();
             const allocator = arena.allocator();
 
@@ -199,7 +199,6 @@ pub fn BinaryFuse(comptime T: type) type {
             const reverse_h = try allocator.alloc(T, size);
 
             const t2hash = try allocator.alloc(u64, capacity);
-            @memset(t2hash, 0);
             lib.set(u8, std.mem.sliceAsBytes(t2hash), 0);
 
             var block_bits: u5 = 1;
@@ -360,6 +359,7 @@ pub fn BinaryFuse(comptime T: type) type {
 
             var i: u32 = @as(u32, @truncate(size - 1));
             while (i < size) : (i -%= 1) {
+                @branchHint(.likely);
                 // the hash of the key we insert next
                 const hash: u64 = reverse_order[i];
                 const xor2: T = @as(T, @truncate(fingerprint(hash)));

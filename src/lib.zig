@@ -16,7 +16,7 @@ pub const MPMCQueue = @import("folly_mpmcqueue.zig").MPMCQueue;
 
 pub const ArrayList = @import("ArrayList.zig").AlignedList;
 
-pub const ArenaAllocator = @import("ArenaAllocator.zig").ArenaAllocator;
+pub const SmallSizeArenaAllocator = @import("ArenaAllocator.zig").ArenaAllocator;
 
 pub const Pool = @import("pool.zig").Growing;
 

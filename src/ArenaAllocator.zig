@@ -25,7 +25,7 @@ pub const ArenaAllocator = struct {
         count: usize,
     };
 
-    const DEFAULT_REGION_CAPACITY: usize = 64 * 1024; // 64 KiB
+    const DEFAULT_REGION_CAPACITY: usize = 1024 * 1024; // 1 MiB
 
     pub fn init(child_allocator: Allocator) ArenaAllocator {
         return .{
@@ -81,31 +81,33 @@ pub const ArenaAllocator = struct {
         const add_call = @addWithOverflow(n, if (ptr_align == 0) 0 else ptr_align - 1);
         if (add_call[1] != 0) return null;
         const aligned_size = add_call[0];
-
         if (self.end == null) {
             assert(self.begin == null);
             const capacity = @max(DEFAULT_REGION_CAPACITY, aligned_size);
             self.end = self.new_region(capacity, alignment) orelse return null;
             self.begin = self.end;
         }
-
-        var current_region = self.end.?;
+        var current_region = self.begin.?; // Start from the beginning
+        var last_viable_region: ?*Region = null;
         while (current_region.count + aligned_size > current_region.capacity and current_region.next != null) {
+            if (current_region.count == 0) last_viable_region = current_region; // Track empty regions
             current_region = current_region.next.?;
         }
         if (current_region.count + aligned_size > current_region.capacity) {
-            assert(current_region.next == null);
-            const capacity = @max(DEFAULT_REGION_CAPACITY, aligned_size);
-            current_region.next = self.new_region(capacity, alignment) orelse return null;
-            current_region = current_region.next.?;
-            self.end = current_region;
+            if (last_viable_region) |region| {
+                current_region = region; // Reuse an empty region
+                self.end = region;
+            } else {
+                const capacity = @max(DEFAULT_REGION_CAPACITY, aligned_size);
+                current_region.next = self.new_region(capacity, alignment) orelse return null;
+                current_region = current_region.next.?;
+                self.end = current_region;
+            }
         }
-
         const addr = @intFromPtr(current_region.data) + current_region.count;
         const adjusted_addr = mem.alignForward(usize, addr, ptr_align);
         const alignment_offset = adjusted_addr - addr;
         if (current_region.count + alignment_offset + n > current_region.capacity) return null;
-
         const result: [*]u8 = @ptrCast(@as([*]u8, @ptrFromInt(adjusted_addr)));
         current_region.count += alignment_offset + n;
         return result;
