@@ -32,6 +32,8 @@ pub const BinaryFuseu8 = BinaryFuse.BinaryFuse(u8);
 
 const native_endian = builtin.cpu.arch.endian();
 
+pub const SpinBitMutex = @import("spinbitmutex.zig").SpinBitMutex;
+
 const has_avx2 = std.Target.x86.featureSetHas(builtin.cpu.features, .avx2);
 
 test {
