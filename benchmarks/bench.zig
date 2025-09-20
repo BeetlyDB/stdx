@@ -158,6 +158,52 @@ pub fn benchStdArena(allocator: Allocator, _: *Timer) !void {
     }
 }
 
+pub fn benchMutexStd(_: Allocator, _: *Timer) !void {
+    const NUM_THREADS = 4;
+    const ITERATIONS = 100_000;
+
+    var mtx = std.Thread.Mutex{};
+    var counter: i32 = 0;
+    var threads: [NUM_THREADS]std.Thread = undefined;
+
+    for (threads, 0..NUM_THREADS) |_, i| {
+        threads[i] = try std.Thread.spawn(.{}, struct {
+            fn run(conter: *i32, mx: *std.Thread.Mutex) void {
+                for (0..ITERATIONS) |_| {
+                    mx.lock();
+                    conter.* += 1;
+                    mx.unlock();
+                }
+            }
+        }.run, .{ &counter, &mtx });
+    }
+
+    for (threads) |t| t.join();
+}
+
+pub fn benchMutexFutex(_: Allocator, _: *Timer) !void {
+    const NUM_THREADS = 4;
+    const ITERATIONS = 100_000;
+
+    var mtx = stdx.Mutex{};
+    var counter: i32 = 0;
+    var threads: [NUM_THREADS]std.Thread = undefined;
+
+    for (threads, 0..NUM_THREADS) |_, i| {
+        threads[i] = try std.Thread.spawn(.{}, struct {
+            fn run(conter: *i32, mx: *stdx.Mutex) !void {
+                for (0..ITERATIONS) |_| {
+                    try mx.lock();
+                    defer mx.unlock();
+                    conter.* += 1;
+                }
+            }
+        }.run, .{ &counter, &mtx });
+    }
+
+    for (threads) |t| t.join();
+}
+
 pub fn benchStdxArena(allocator: Allocator, _: *Timer) !void {
     var arena = stdx.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -338,19 +384,9 @@ pub fn main() !void {
     const r4 = try run(benchRing_MT, opts);
     r4.print("LockFreeRingBuffer concurrent");
 
-    const r5 = try run(benchStdArena, opts);
-    r5.print("std.ArenaAllocator");
+    const r_std = try run(benchMutexStd, opts);
+    r_std.print("std.Thread.Mutex");
 
-    const r6 = try run(benchStdxArena, opts);
-    r6.print("stdx.ArenaAllocator");
-
-    const r7 = try run(benchManySmallStd, opts);
-    r7.print("std.ArenaAllocator many small");
-    const r8 = try run(benchManySmallStdx, opts);
-    r8.print("stdx.ArenaAllocator many small");
-
-    const r9 = try run(benchBigStd, opts);
-    r9.print("std.ArenaAllocator many big");
-    const r10 = try run(benchBigStdx, opts);
-    r10.print("stdx.ArenaAllocator many big");
+    const r_futex = try run(benchMutexFutex, opts);
+    r_futex.print("Futex Mutex");
 }

@@ -14,6 +14,8 @@ pub const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 
 pub const MPMCQueue = @import("folly_mpmcqueue.zig").MPMCQueue;
 
+pub const Mutex = @import("mutex.zig").Mutex;
+
 pub const ArrayList = @import("ArrayList.zig").AlignedList;
 
 pub const SmallSizeArenaAllocator = @import("ArenaAllocator.zig").ArenaAllocator;
@@ -31,8 +33,6 @@ pub const BinaryFuse = @import("binary_fuse_filter.zig");
 pub const BinaryFuseu8 = BinaryFuse.BinaryFuse(u8);
 
 const native_endian = builtin.cpu.arch.endian();
-
-pub const SpinBitMutex = @import("spinbitmutex.zig").SpinBitMutex;
 
 const has_avx2 = std.Target.x86.featureSetHas(builtin.cpu.features, .avx2);
 

@@ -175,7 +175,7 @@ pub fn BinaryFuse(comptime T: type) type {
         /// call leads to the first element again.
         ///
         /// `keys.len()` must return the `usize` length.
-        pub fn populateIter(self: *Self, alloc: Allocator, keys: anytype) Error!void {
+        pub inline fn populateIter(self: *Self, alloc: Allocator, keys: anytype) Error!void {
             if (keys.len() == 0) {
                 return;
             }
@@ -350,9 +350,12 @@ pub fn BinaryFuse(comptime T: type) type {
                     size = stacksize;
                     break;
                 }
-                @memset(reverse_order[0..size], 0);
-                @memset(t2count[0..capacity], 0);
-                @memset(t2hash[0..capacity], 0);
+                // @memset(reverse_order[0..size], 0);
+                lib.set(u8, std.mem.sliceAsBytes(reverse_order[0..size]), 0);
+                // @memset(t2count[0..capacity], 0);
+                lib.set(u8, std.mem.sliceAsBytes(t2count[0..capacity]), 0);
+                // @memset(t2hash[0..capacity], 0);
+                lib.set(u8, std.mem.sliceAsBytes(t2hash[0..capacity]), 0);
                 self.seed = prng.rngSplitMix64(&rng_counter);
             }
             if (size == 0) return;
