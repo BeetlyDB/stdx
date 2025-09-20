@@ -3,6 +3,19 @@ const builtin = @import("builtin");
 const Futex = std.Thread.Futex;
 const assert = std.debug.assert;
 
+cpu_count: usize,
+
+var global: @This() = .{
+    .cpu_count = 0,
+};
+
+fn getCpuCount() usize {
+    const cpu_count = @atomicLoad(usize, &global.cpu_count, .unordered);
+    if (cpu_count != 0) return cpu_count;
+    const n: usize = (std.Thread.getCpuCount() catch 1);
+    return if (@cmpxchgStrong(usize, &global.cpu_count, 0, n, .monotonic, .monotonic)) |other| other else n;
+}
+
 inline fn waitBitset(
     ptr: *const std.atomic.Value(usize),
     expect: usize,
@@ -10,11 +23,10 @@ inline fn waitBitset(
     timeout: ?u64,
 ) !void {
     var ts: std.os.linux.timespec = undefined;
-    const tsptr = if (timeout) |t| blk: {
+    if (timeout) |t| {
         ts.sec = @intCast(t / std.time.ns_per_s);
         ts.nsec = @intCast(t % std.time.ns_per_s);
-        break :blk &ts;
-    } else null;
+    }
 
     const futex_size: std.os.linux.FUTEX2_SIZE = blk: {
         if (@bitSizeOf(usize) == 64) break :blk .U64;
@@ -26,7 +38,7 @@ inline fn waitBitset(
         expect,
         bitset,
         .{ .private = true, .size = futex_size },
-        tsptr,
+        (if (timeout != null) @ptrCast(&ts) else null),
         .MONOTONIC,
     );
     switch (std.os.linux.E.init(rc)) {
@@ -119,9 +131,13 @@ inline fn wake(ptr: *const std.atomic.Value(usize), max_waiters: u32) void {
     }
 }
 
-const DoublyLinkedListType = @import("doublelinkedlist.zig").DoublyLinkedListType;
-
 pub const Mutex = struct {
+    comptime {
+        if (builtin.os.tag != .linux) {
+            @panic("this implementation only for linux");
+        }
+    }
+    _: void align(std.atomic.cache_line) = {},
     state: std.atomic.Value(usize) = std.atomic.Value(usize).init(UNLOCKED),
     const UNLOCKED: usize = 0;
     const LOCKED: usize = 1;
@@ -148,7 +164,7 @@ pub const Mutex = struct {
         if (comptime builtin.target.cpu.arch.isX86()) {
             return self.tryAcquirex86();
         }
-        if (self.state.raw & LOCKED != 0) return false;
+        if (self.state.load(.monotonic) & LOCKED != 0) return false;
         return @cmpxchgWeak(usize, &self.state.raw, self.state.raw, self.state.raw | LOCKED, .acquire, .acquire) == null;
     }
 
@@ -162,25 +178,12 @@ pub const Mutex = struct {
 
     pub inline fn lock(self: *Mutex) !void {
         if (!self.trylock()) {
-            try self.acquireSlow(null);
+            try self.acquireSlow();
         }
     }
 
-    pub fn trylockFor(self: *Mutex, duration: u64) error{TimedOut}!void {
-        return self.trylockUntil(std.time.timestamp() + duration);
-    }
-
-    pub fn unlock(self: *Mutex) void {
+    pub inline fn unlock(self: *Mutex) void {
         self.release();
-    }
-
-    pub fn trylockUntil(self: *Mutex, deadline: u64) error{TimedOut}!void {
-        return self.acquireInner(deadline);
-    }
-
-    inline fn acquireInner(self: *Mutex, deadline: ?u64) error{TimedOut}!void {
-        if (self.trylock()) return;
-        try self.acquireSlow(deadline);
     }
 
     inline fn release(self: *Mutex) void {
@@ -188,7 +191,7 @@ pub const Mutex = struct {
             self.releaseSlow();
         }
     }
-    inline fn acquireSlow(self: *Mutex, deadline: ?u64) !void {
+    inline fn acquireSlow(self: *Mutex) !void {
         var waiter: Waiter = .{
             .tail = null,
             .prev = null,
@@ -196,10 +199,17 @@ pub const Mutex = struct {
         };
 
         var spin_count: usize = 0;
-        const max_spins = 20;
+        const ncpu = getCpuCount();
+        assert(ncpu != 0);
+        var max_spins: usize = 40;
+        if (ncpu > 4) {
+            max_spins = 100;
+        }
+
         var state = self.state.load(.acquire);
 
         while (true) {
+            @branchHint(.likely);
             if (state & LOCKED == 0) {
                 if (self.trylock()) return;
                 try std.Thread.yield();
@@ -225,7 +235,7 @@ pub const Mutex = struct {
             }
 
             if ((state & PARKED) == 0) {
-                if (@cmpxchgWeak(usize, &self.state.raw, state, state | PARKED, .seq_cst, .monotonic)) |updated| {
+                if (@cmpxchgWeak(usize, &self.state.raw, state, state | PARKED, .release, .monotonic)) |updated| {
                     state = updated;
                     continue;
                 }
@@ -238,16 +248,7 @@ pub const Mutex = struct {
             const new_state = (state & ~WAITING) | @intFromPtr(&waiter);
             state = @cmpxchgWeak(usize, &self.state.raw, state, new_state, .release, .monotonic) orelse blk: {
                 const bitset = LOCKED | PARKED;
-                if (deadline) |d| {
-                    const timeout = d - @as(u64, @intCast(std.time.timestamp()));
-                    if (timeout <= 0) {
-                        return error.TimedOut;
-                    }
-
-                    try waitBitset(&self.state, state, bitset, timeout);
-                } else {
-                    try waitBitset(&self.state, state, bitset, null);
-                }
+                try waitBitset(&self.state, state, bitset, null);
                 spin_count = 0;
                 break :blk self.state.load(.acquire);
             };
@@ -398,5 +399,116 @@ test "Mutex: benchmark" {
     for (threads) |t| t.join();
     const end_std = std.time.nanoTimestamp();
     std.debug.print("Std Mutex: {} ns\n", .{end_std - start_std});
+    try std.testing.expectEqual(counter.value, @as(i32, num_threads * increments_per_thread));
+}
+
+test "Mutex: multiple waiters with delay" {
+    const Counter = struct {
+        value: i32 = 0,
+        mutex: Mutex = .{},
+
+        fn increment(self: *@This()) !void {
+            try self.mutex.lock();
+            defer self.mutex.unlock();
+
+            self.value += 1;
+            std.Thread.sleep(100_000_000); // 100ms
+        }
+    };
+
+    var counter = Counter{};
+    const num_threads = 10;
+    var threads: [num_threads]std.Thread = undefined;
+
+    for (&threads) |*t| {
+        t.* = try std.Thread.spawn(.{}, Counter.increment, .{&counter});
+    }
+
+    for (threads) |t| t.join();
+
+    try std.testing.expectEqual(counter.value, num_threads);
+}
+
+test "Mutex: high contention with mixed trylock and lock" {
+    const Counter = struct {
+        value: i32 = 0,
+        mutex: Mutex = .{},
+        fn tryIncrement(self: *@This()) !void {
+            if (self.mutex.trylock()) {
+                defer self.mutex.unlock();
+                self.value += 1;
+            } else {
+                try self.mutex.lock();
+                defer self.mutex.unlock();
+                self.value += 1;
+            }
+        }
+    };
+    var counter = Counter{};
+    const num_threads = 16;
+    const increments_per_thread = 500;
+    var threads: [num_threads]std.Thread = undefined;
+    for (&threads) |*t| {
+        t.* = try std.Thread.spawn(.{}, struct {
+            fn run(c: *Counter) !void {
+                for (0..increments_per_thread) |_| {
+                    try c.tryIncrement();
+                }
+            }
+        }.run, .{&counter});
+    }
+    for (threads) |t| t.join();
+    try std.testing.expectEqual(counter.value, @as(i32, num_threads * increments_per_thread));
+}
+
+test "Mutex: bitset wakeup correctness" {
+    var mutex = Mutex{};
+    try mutex.lock();
+    const num_threads = 5;
+    var threads: [num_threads]std.Thread = undefined;
+    var counter: i32 = 0;
+    for (&threads) |*t| {
+        t.* = try std.Thread.spawn(.{}, struct {
+            fn run(m: *Mutex, c: *i32) !void {
+                try m.lock();
+                @atomicStore(i32, c, @atomicLoad(i32, c, .seq_cst) + 1, .seq_cst);
+                m.unlock();
+            }
+        }.run, .{ &mutex, &counter });
+    }
+    std.Thread.sleep(10_000_000); // 10ms to ensure threads are waiting
+    mutex.unlock();
+    for (threads) |t| t.join();
+    try std.testing.expectEqual(counter, num_threads);
+}
+
+test "Mutex: stress test with random delays" {
+    const Counter = struct {
+        value: i32 = 0,
+        mutex: Mutex = .{},
+        fn increment(self: *@This()) !void {
+            try self.mutex.lock();
+            defer self.mutex.unlock();
+            self.value += 1;
+            var rand = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+            std.Thread.sleep(rand
+                .random()
+                .intRangeAtMost(u64, 0, 10_000_000));
+        }
+    };
+    var counter = Counter{};
+    const num_threads = 20;
+    const increments_per_thread = 200;
+    var threads: [num_threads]std.Thread = undefined;
+    for (&threads) |*t| {
+        t.* = try std.Thread.spawn(.{}, struct {
+            fn run(c: *Counter) !void {
+                for (0..increments_per_thread) |_| {
+                    try c.increment();
+                }
+            }
+        }.run, .{&counter});
+    }
+    for (threads) |t| t.join();
     try std.testing.expectEqual(counter.value, @as(i32, num_threads * increments_per_thread));
 }
