@@ -49,6 +49,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    b.modules.put("stdx", lib_mod) catch @panic("OOM");
     const lib = b.addLibrary(.{
         .linkage = .static,
         .name = "stdx",

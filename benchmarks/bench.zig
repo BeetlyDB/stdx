@@ -90,6 +90,36 @@ pub fn Result(comptime SAMPLE_COUNT: usize) type {
     };
 }
 
+pub fn runWithAllocator(allocator: std.mem.Allocator, func: TypeOfBenchmark(void), comptime opts: Opts) !Result(opts.samples) {
+    const sample_count = opts.samples;
+    const run_time = opts.runtime * std.time.ns_per_ms;
+
+    var total: u64 = 0;
+    var iterations: usize = 0;
+    var timer = try std.time.Timer.start();
+    var samples = std.mem.zeroes([sample_count]u64);
+
+    while (true) {
+        iterations += 1;
+        timer.reset();
+        try func(allocator, &timer);
+        const elapsed = timer.lap();
+
+        total += elapsed;
+        samples[@mod(iterations, sample_count)] = elapsed;
+        if (total > run_time) break;
+    }
+
+    std.sort.heap(u64, samples[0..@min(sample_count, iterations)], {}, resultLessThan);
+
+    return .{
+        .total = total,
+        ._samples = samples,
+        .iterations = iterations,
+        .requested_bytes = 0,
+    };
+}
+
 pub fn run(func: TypeOfBenchmark(void), comptime opts: Opts) !Result(opts.samples) {
     return runC({}, func, opts);
 }
@@ -368,6 +398,42 @@ pub fn benchRing_MT(allocator: Allocator, _: *Timer) !void {
     }
 
     for (threads) |t| t.join();
+}
+
+pub fn benchTcsManySmall(a: std.mem.Allocator, _: *std.time.Timer) !void {
+    var i: usize = 0;
+    while (i < 100_000) : (i += 1) {
+        const buf = try a.alloc(u8, 8);
+        @memset(buf, 0xAA);
+        a.free(buf);
+    }
+}
+
+pub fn benchSmpManySmall(a: std.mem.Allocator, _: *std.time.Timer) !void {
+    var i: usize = 0;
+    while (i < 100_000) : (i += 1) {
+        const buf = try a.alloc(u8, 8);
+        @memset(buf, 0xBB);
+        a.free(buf);
+    }
+}
+
+pub fn benchTcsBig(a: std.mem.Allocator, _: *std.time.Timer) !void {
+    var i: usize = 0;
+    while (i < 1_000) : (i += 1) {
+        const buf = try a.alloc(u8, 1024 * 1024);
+        @memset(buf, 0xCC);
+        a.free(buf);
+    }
+}
+
+pub fn benchSmpBig(a: std.mem.Allocator, _: *std.time.Timer) !void {
+    var i: usize = 0;
+    while (i < 1_000) : (i += 1) {
+        const buf = try a.alloc(u8, 1024 * 1024);
+        @memset(buf, 0xDD);
+        a.free(buf);
+    }
 }
 
 pub fn main() !void {
