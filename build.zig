@@ -7,21 +7,23 @@ fn addDep(
 ) void {
     const has_avx2 = std.Target.x86.featureSetHas(builtin.cpu.features, .avx2);
     if (has_avx2) {
+        const folly_obj = b.pathJoin(&.{ b.cache_root.path.?, "folly.o" });
+        const folly_memset_obj = b.pathJoin(&.{ b.cache_root.path.?, "folly_memset.o" });
+
         const asm_step = b.addSystemCommand(&.{
             "zig",
             "cc",
             "-c",
             "src/asm_folly.S",
             "-o",
-            "src/folly.o",
+            folly_obj,
             "-D__AVX2__",
-            // "-DFOLLY_MEMCPY_IS_MEMCPY",
             "-mtune=native",
             "-fno-exceptions",
             "-g0",
         });
         artifact.step.dependOn(&asm_step.step);
-        artifact.addObjectFile(b.path("src/folly.o"));
+        artifact.addObjectFile(.{ .cwd_relative = folly_obj });
 
         const asm_step2 = b.addSystemCommand(&.{
             "zig",
@@ -29,15 +31,14 @@ fn addDep(
             "-c",
             "src/asm_folly_memset.S",
             "-o",
-            "src/folly_memset.o",
+            folly_memset_obj,
             "-D__AVX2__",
-            // "-DFOLLY_MEMCPY_IS_MEMCPY",
             "-mtune=native",
             "-fno-exceptions",
             "-g0",
         });
         artifact.step.dependOn(&asm_step2.step);
-        artifact.addObjectFile(b.path("src/folly_memset.o"));
+        artifact.addObjectFile(.{ .cwd_relative = folly_memset_obj });
     }
 }
 
