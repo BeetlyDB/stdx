@@ -14,10 +14,19 @@ const salt = [_]u64{
 pub inline fn hash_inline(value: anytype) u64 {
     comptime {
         assert(lib.no_padding(@TypeOf(value)));
-        assert(std.meta.hasUniqueRepresentation(@TypeOf(value)));
+        assert(std.meta.hasUniqueRepresentation(@TypeOf(value)) or
+            (@typeInfo(@TypeOf(value)) == .pointer and
+                @typeInfo(@TypeOf(value)).pointer.size == .Slice and
+                @typeInfo(@TypeOf(value)).pointer.child == u8 and
+                @typeInfo(@TypeOf(value)).pointer.is_const));
     }
     return low_level_hash(0, switch (@typeInfo(@TypeOf(value))) {
         .@"struct", .int => std.mem.asBytes(&value),
+        .pointer => |info| if (info.size == .slice and info.child == u8 and info.is_const)
+            value
+        else
+            @compileError("unsupported hashing for " ++ @typeName(@TypeOf(value))),
+        .@"enum" => std.mem.asBytes(&value),
         else => @compileError("unsupported hashing for " ++ @typeName(@TypeOf(value))),
     });
 }

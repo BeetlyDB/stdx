@@ -12,6 +12,7 @@ pub const LockFreeRingBuffer = @import("folly_lock_free_ringbuffer.zig").LockFre
 
 pub const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 
+pub const hash = @import("hash.zig");
 pub const MPMCQueue = @import("folly_mpmcqueue.zig").MPMCQueue;
 
 pub const Mutex = @import("mutex.zig").Mutex;
@@ -497,13 +498,10 @@ pub fn no_padding(comptime T: type) bool {
                     for (info.fields) |field| {
                         if (!no_padding(field.type)) return false;
                     }
-
-                    // Check offsets of u128 and pseudo-u256 fields.
                     for (info.fields) |field| {
                         if (field.type == u128) {
                             const offset = @offsetOf(T, field.name);
                             if (offset % @sizeOf(u128) != 0) return false;
-
                             if (@hasField(T, field.name ++ "_padding")) {
                                 if (offset % @sizeOf(u256) != 0) return false;
                                 if (offset + @sizeOf(u128) !=
@@ -514,7 +512,6 @@ pub fn no_padding(comptime T: type) bool {
                             }
                         }
                     }
-
                     var offset = 0;
                     for (info.fields) |field| {
                         const field_offset = @offsetOf(T, field.name);
@@ -529,7 +526,12 @@ pub fn no_padding(comptime T: type) bool {
         .@"enum" => |info| {
             return no_padding(info.tag_type);
         },
-        .pointer => return false,
+        .pointer => |info| {
+            if (info.size == .Slice and info.child == u8 and info.is_const) {
+                return true;
+            }
+            return false;
+        },
         .@"union" => return false,
         else => return false,
     };

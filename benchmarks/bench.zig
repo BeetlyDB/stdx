@@ -9,6 +9,8 @@ pub const Opts = struct {
     runtime: usize = 3 * std.time.ms_per_s,
 };
 
+const key: u64 = 47821748217481;
+
 pub fn Result(comptime SAMPLE_COUNT: usize) type {
     return struct {
         total: u64,
@@ -436,6 +438,69 @@ pub fn benchSmpBig(a: std.mem.Allocator, _: *std.time.Timer) !void {
     }
 }
 
+const SmallData = extern struct {
+    data: [8]u8 align(8) = [_]u8{0xAA} ** 8,
+};
+
+const MediumData = extern struct {
+    data: [64]u8 align(8) = [_]u8{0xBB} ** 64,
+};
+
+const LargeData = extern struct {
+    data: [1024]u8 align(8) = [_]u8{0xCC} ** 1024,
+};
+
+pub fn benchHashInlineSmall(_: Allocator, _: *Timer) !void {
+    const data = SmallData{};
+    _ = stdx.hash.hash_inline(data);
+}
+
+pub fn benchHashInlineMedium(_: Allocator, _: *Timer) !void {
+    const data = MediumData{};
+    _ = stdx.hash.hash_inline(data);
+}
+
+pub fn benchHashInlineLarge(_: Allocator, _: *Timer) !void {
+    const data = LargeData{};
+    _ = stdx.hash.hash_inline(data);
+}
+
+pub fn benchWhashSmall(_: Allocator, _: *Timer) !void {
+    const data = SmallData{};
+    _ = stdx.hash._whash(std.mem.asBytes(&data), 0);
+}
+
+pub fn benchWhashMedium(_: Allocator, _: *Timer) !void {
+    const data = MediumData{};
+    _ = stdx.hash._whash(std.mem.asBytes(&data), 0);
+}
+
+pub fn benchWhashLarge(_: Allocator, _: *Timer) !void {
+    const data = LargeData{};
+    _ = stdx.hash._whash(std.mem.asBytes(&data), 0);
+}
+
+pub fn benchWhashStdLarge(_: Allocator, _: *Timer) !void {
+    const data = LargeData{};
+    _ = std.hash.Wyhash.hash(0, std.mem.asBytes(&data));
+}
+
+pub fn benchInlineU64(_: Allocator, _: *Timer) !void {
+    _ = stdx.hash.hash_inline(key);
+}
+
+pub fn benchWhashU64(_: Allocator, _: *Timer) !void {
+    _ = stdx.hash._wx64(key);
+}
+
+pub fn benchWhashStdU64(_: Allocator, _: *Timer) !void {
+    _ = std.hash.Wyhash.hash(0, std.mem.asBytes(&key));
+}
+
+pub fn benchMurMurU64(_: Allocator, _: *Timer) !void {
+    _ = stdx.hash.murmur64(key);
+}
+
 pub fn main() !void {
     const opts = Opts{ .samples = 1000, .runtime = 1000 };
     const r1 = try run(benchMPMC, opts);
@@ -455,4 +520,33 @@ pub fn main() !void {
 
     const r_futex = try run(benchMutexFutex, opts);
     r_futex.print("Futex Mutex");
+
+    // (8 byte)
+    const inlsmll = try run(benchHashInlineSmall, opts);
+    inlsmll.print("hash_inline (8 bytes)");
+    const whsmll = try run(benchWhashSmall, opts);
+    whsmll.print("_whash (8 bytes)");
+
+    // (64 bytes)
+    const inlmd = try run(benchHashInlineMedium, opts);
+    inlmd.print("hash_inline (64 bytes)");
+    const whmd = try run(benchWhashMedium, opts);
+    whmd.print("_whash (64 bytes)");
+
+    // (1 Кb)
+    const r5 = try run(benchHashInlineLarge, opts);
+    r5.print("hash_inline (1 KB)");
+    const r6 = try run(benchWhashLarge, opts);
+    r6.print("_whash (1 KB)");
+    const stwh = try run(benchWhashStdLarge, opts);
+    stwh.print("std_whash (1 KB)");
+
+    const r7 = try run(benchInlineU64, opts);
+    r7.print("hash_inline (u64)");
+    const r8 = try run(benchWhashU64, opts);
+    r8.print("_whash (u64)");
+    const r9 = try run(benchWhashStdU64, opts);
+    r9.print("std_whash (u64)");
+    const r10 = try run(benchMurMurU64, opts);
+    r10.print("murmur(u64)");
 }

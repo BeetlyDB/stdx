@@ -235,7 +235,7 @@ pub fn BinaryFuse(comptime T: type) type {
                 while (keys.next()) |key| {
                     if (comptime is_debug) got_num_keys += 1;
                     const sum: u64 = key +% self.seed;
-                    const hash = hsh._wx64(sum);
+                    const hash = hsh.murmur64(sum);
 
                     const shift_count = @as(usize, 64) - @as(usize, block_bits);
                     var segment_index: u64 = if (shift_count >= 63) 0 else hash >> @as(u6, @truncate(shift_count));
@@ -432,7 +432,7 @@ inline fn fingerprint(hash: u64) u64 {
 }
 
 inline fn mixSplit(key: u64, seed: u64) u64 {
-    return hsh._wx64(@as(u64, key +% seed));
+    return hsh.murmur64(@as(u64, key +% seed));
 }
 
 inline fn binaryFuseTest(T: anytype, size: usize, size_in_bytes: usize) !void {
