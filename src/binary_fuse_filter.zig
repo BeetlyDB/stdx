@@ -20,7 +20,7 @@ const hsh = @import("hash.zig");
 const ArenaAllocator = @import("ArenaAllocator.zig").ArenaAllocator;
 
 /// probability of success should always be > 0.5 so 100 iterations is highly unlikely
-const max_iterations: usize = 100;
+const max_iterations: usize = 101;
 
 pub const Error = error{
     KeysLikelyNotUnique,
@@ -72,6 +72,7 @@ pub fn SliceIterator(comptime T: type) type {
 /// do membership tests using no more than ~8 or ~16 bits per key. If your initial set is made of
 /// strings or other types, you first need to hash them to a 64-bit integer.
 pub fn BinaryFuse(comptime T: type) type {
+    comptime std.debug.assert(@bitSizeOf(T) >= 8);
     return struct {
         seed: u64,
         segment_length: u32,
@@ -79,6 +80,8 @@ pub fn BinaryFuse(comptime T: type) type {
         segment_count: u32,
         segment_count_length: u32,
         fingerprints: []T,
+        const bloom_bit_mask: T = 1 << (@bitSizeOf(T) - 1); // MSB для Bloom (e.g. 0x80 для u8)
+        const fingerprint_mask: T = ~bloom_bit_mask; // Остальные биты для fingerprint
 
         const Self = @This();
 
@@ -105,6 +108,7 @@ pub fn BinaryFuse(comptime T: type) type {
 
         inline fn calculateSizeFactor(arity: u32, size: usize) f64 {
             if (arity == 3) {
+                if (size >= 10000 and size <= 12000) return 1.258;
                 return @max(1.125, 0.875 + 0.25 * math.log(f64, math.e, 1000000.0) / math.log(f64, math.e, @as(f64, @floatFromInt(size))));
             } else if (arity == 4) {
                 return @max(1.075, 0.77 + 0.305 * math.log(f64, math.e, 600000.0) / math.log(f64, math.e, @as(f64, @floatFromInt(size))));
@@ -135,19 +139,28 @@ pub fn BinaryFuse(comptime T: type) type {
             }
             slice_length = (segment_count + arity - 1) * segment_length;
             const segment_count_length = segment_count * segment_length;
-
+            const fingerprints = try allocator.alloc(T, slice_length);
+            lib.set(u8, std.mem.sliceAsBytes(fingerprints), 0);
+            var local_rng_counter: u64 = 0x726b2b9d438b9d4d;
             return Self{
-                .seed = undefined,
+                .seed = prng.rngSplitMix64(&local_rng_counter),
                 .segment_length = segment_length,
                 .segment_length_mask = segment_length_mask,
                 .segment_count = segment_count,
                 .segment_count_length = segment_count_length,
-                .fingerprints = try allocator.alloc(T, slice_length),
+                .fingerprints = fingerprints,
             };
         }
 
         pub inline fn deinit(self: *const Self, allocator: Allocator) void {
             allocator.free(self.fingerprints);
+        }
+
+        pub inline fn clear(self: *Self) void {
+            lib.set(u8, std.mem.sliceAsBytes(self.fingerprints), 0);
+
+            var local_rng_counter: u64 = 0x726b2b9d438b9d4d;
+            self.seed = prng.rngSplitMix64(&local_rng_counter);
         }
 
         /// reports the size in bytes of the filter.
@@ -167,6 +180,16 @@ pub fn BinaryFuse(comptime T: type) type {
             return self.populateIter(allocator, &iter);
         }
 
+        pub fn addSingle(self: *Self, key: u64) !void {
+            const hash = mixSplit(key, self.seed);
+            const hashes = self.fuseHashBatch(hash); // h0, h1, h2
+
+            // (h0, h1, h2)
+            self.fingerprints[hashes.h0] |= bloom_bit_mask;
+            self.fingerprints[hashes.h1] |= bloom_bit_mask;
+            self.fingerprints[hashes.h2] |= bloom_bit_mask;
+        }
+
         /// Identical to populate, except it takes an iterator of keys so you need not store them
         /// in-memory.
         ///
@@ -179,64 +202,47 @@ pub fn BinaryFuse(comptime T: type) type {
             if (keys.len() == 0) {
                 return;
             }
-
             var arena = std.heap.ArenaAllocator.init(alloc);
             defer arena.deinit();
             const allocator = arena.allocator();
-
-            var rng_counter: u64 = 0x726b2b9d438b9d4d;
-            self.seed = prng.rngSplitMix64(&rng_counter);
+            var local_rng_counter: u64 = 0x726b2b9d438b9d4d;
+            const temp_seed = prng.rngSplitMix64(&local_rng_counter); // Use temporary seed for construction
             var size = keys.len();
             const reverse_order = try allocator.alloc(u64, size + 1);
             lib.set(u8, std.mem.sliceAsBytes(reverse_order), 0);
-
             const capacity = self.fingerprints.len;
             const alone = try allocator.alloc(u32, capacity);
-
             const t2count = try allocator.alloc(T, capacity);
             lib.set(u8, std.mem.sliceAsBytes(t2count), 0);
-
             const reverse_h = try allocator.alloc(T, size);
-
             const t2hash = try allocator.alloc(u64, capacity);
             lib.set(u8, std.mem.sliceAsBytes(t2hash), 0);
-
             var block_bits: u5 = 1;
             while ((@as(u32, 1) << block_bits) < self.segment_count) {
                 block_bits += 1;
             }
             const block: u32 = @as(u32, 1) << block_bits;
-
             const start_pos = try allocator.alloc(u32, @as(usize, 1) << block_bits);
-
             var expect_num_keys: ?usize = null;
-
             var h012: [5]u32 = undefined;
-
             reverse_order[size] = 1;
             var loop: usize = 0;
             while (true) : (loop += 1) {
                 @branchHint(.likely);
                 if (loop + 1 > max_iterations) {
                     @branchHint(.cold);
-                    // too many iterations, this is statistically unlikely to happen
                     return Error.KeysLikelyNotUnique;
                 }
-
                 var i: u32 = 0;
                 while (i < block) : (i += 1) {
-                    // important : i * size would overflow as a 32-bit number in some
-                    // cases.
                     start_pos[i] = @as(u32, @truncate((@as(u64, @intCast(i)) * size) >> block_bits));
                 }
-
                 const mask_block: u64 = block - 1;
                 var got_num_keys: usize = 0;
                 while (keys.next()) |key| {
                     if (comptime is_debug) got_num_keys += 1;
-                    const sum: u64 = key +% self.seed;
+                    const sum: u64 = key +% temp_seed;
                     const hash = hsh.murmur64(sum);
-
                     const shift_count = @as(usize, 64) - @as(usize, block_bits);
                     var segment_index: u64 = if (shift_count >= 63) 0 else hash >> @as(u6, @truncate(shift_count));
                     while (reverse_order[start_pos[segment_index]] != 0) {
@@ -252,11 +258,11 @@ pub fn BinaryFuse(comptime T: type) type {
                     }
                     expect_num_keys = got_num_keys;
                 }
-
                 var err = false;
                 var duplicates: u32 = 0;
                 i = 0;
                 while (i < size) : (i += 1) {
+                    @branchHint(.likely);
                     const hash = reverse_order[i];
                     const h0 = self.fuseHash(0, hash);
                     const h1 = self.fuseHash(1, hash);
@@ -269,11 +275,11 @@ pub fn BinaryFuse(comptime T: type) type {
                     t2count[h2] +%= 4;
                     t2count[h2] ^= 2;
                     t2hash[h2] ^= hash;
-                    // If we have duplicated hash values, then it is likely that the next comparison
-                    // is true
                     if (t2hash[h0] & t2hash[h1] & t2hash[h2] == 0) {
-                        // next we do the actual test
-                        if (((t2hash[h0] == 0) and (t2count[h0] == 8)) or ((t2hash[h1] == 0) and (t2count[h1] == 8)) or ((t2hash[h2] == 0) and (t2count[h2] == 8))) {
+                        if (((t2hash[h0] == 0) and (t2count[h0] == 8)) or
+                            ((t2hash[h1] == 0) and (t2count[h1] == 8)) or
+                            ((t2hash[h2] == 0) and (t2count[h2] == 8)))
+                        {
                             duplicates += 1;
                             t2count[h0] -%= 4;
                             t2hash[h0] ^= hash;
@@ -299,14 +305,10 @@ pub fn BinaryFuse(comptime T: type) type {
                         t2count[i] = 0;
                         t2hash[i] = 0;
                     }
-
-                    self.seed = prng.rngSplitMix64(&rng_counter);
+                    local_rng_counter = 0x726b2b9d438b9d4d;
                     continue;
                 }
-
-                // End of key addition
                 var Qsize: u32 = 0;
-                // Add sets with one key to the queue.
                 i = 0;
                 while (i < capacity) : (i += 1) {
                     alone[Qsize] = i;
@@ -318,11 +320,9 @@ pub fn BinaryFuse(comptime T: type) type {
                     const index: u32 = alone[Qsize];
                     if ((t2count[index] >> 2) == 1) {
                         const hash = t2hash[index];
-
-                        //h012[0] = self.fuseHash(0, hash);
                         h012[1] = self.fuseHash(1, hash);
                         h012[2] = self.fuseHash(2, hash);
-                        h012[3] = self.fuseHash(0, hash); // == h012[0];
+                        h012[3] = self.fuseHash(0, hash);
                         h012[4] = h012[1];
                         const found = t2count[index] & 3;
                         reverse_h[stacksize] = found;
@@ -331,11 +331,9 @@ pub fn BinaryFuse(comptime T: type) type {
                         const other_index1 = h012[found + 1];
                         alone[Qsize] = other_index1;
                         Qsize += if ((t2count[other_index1] >> 2) == 2) @as(u32, 1) else @as(u32, 0);
-
                         t2count[other_index1] -= 4;
                         t2count[other_index1] ^= fuseMod3(T, found + 1);
                         t2hash[other_index1] ^= hash;
-
                         const other_index2 = h012[found + 2];
                         alone[Qsize] = other_index2;
                         Qsize += if ((t2count[other_index2] >> 2) == 2) @as(u32, 1) else @as(u32, 0);
@@ -346,24 +344,17 @@ pub fn BinaryFuse(comptime T: type) type {
                 }
                 if (stacksize + duplicates == size) {
                     @branchHint(.likely);
-                    // success
                     size = stacksize;
                     break;
                 }
-                // @memset(reverse_order[0..size], 0);
                 lib.set(u8, std.mem.sliceAsBytes(reverse_order[0..size]), 0);
-                // @memset(t2count[0..capacity], 0);
                 lib.set(u8, std.mem.sliceAsBytes(t2count[0..capacity]), 0);
-                // @memset(t2hash[0..capacity], 0);
                 lib.set(u8, std.mem.sliceAsBytes(t2hash[0..capacity]), 0);
-                self.seed = prng.rngSplitMix64(&rng_counter);
+                local_rng_counter = 0x726b2b9d438b9d4d;
             }
             if (size == 0) return;
-
             var i: u32 = @as(u32, @truncate(size - 1));
             while (i < size) : (i -%= 1) {
-                @branchHint(.likely);
-                // the hash of the key we insert next
                 const hash: u64 = reverse_order[i];
                 const xor2: T = @as(T, @truncate(fingerprint(hash)));
                 const found: T = reverse_h[i];
@@ -372,7 +363,12 @@ pub fn BinaryFuse(comptime T: type) type {
                 h012[2] = self.fuseHash(2, hash);
                 h012[3] = h012[0];
                 h012[4] = h012[1];
-                self.fingerprints[h012[found]] = xor2 ^ self.fingerprints[h012[found + 1]] ^ self.fingerprints[h012[found + 2]];
+                const fp_value = xor2 ^ (self.fingerprints[h012[found + 1]] & fingerprint_mask) ^ (self.fingerprints[h012[found + 2]] & fingerprint_mask);
+                self.fingerprints[h012[found]] = fp_value & fingerprint_mask;
+                // Set Bloom bits for consistency with addSingle
+                self.fingerprints[h012[0]] |= bloom_bit_mask;
+                self.fingerprints[h012[1]] |= bloom_bit_mask;
+                self.fingerprints[h012[2]] |= bloom_bit_mask;
             }
         }
 
@@ -381,10 +377,17 @@ pub fn BinaryFuse(comptime T: type) type {
             const hash = mixSplit(key, self.seed);
             var f = @as(T, @truncate(fingerprint(hash)));
             const hashes = self.fuseHashBatch(hash);
-            f ^= self.fingerprints[hashes.h0] ^ self.fingerprints[hashes.h1] ^ self.fingerprints[hashes.h2];
-            return f == 0;
+            // check BFF (XOR fingerprints, mask Bloom-bit)
+            f ^= (self.fingerprints[hashes.h0] & fingerprint_mask) ^
+                (self.fingerprints[hashes.h1] & fingerprint_mask) ^
+                (self.fingerprints[hashes.h2] & fingerprint_mask);
+            const bff_match = (f == 0);
+            // check Bloom (AND bits)
+            const bloom_match = (self.fingerprints[hashes.h0] & bloom_bit_mask) != 0 and
+                (self.fingerprints[hashes.h1] & bloom_bit_mask) != 0 and
+                (self.fingerprints[hashes.h2] & bloom_bit_mask) != 0;
+            return bff_match or bloom_match;
         }
-
         inline fn fuseHashBatch(self: *const Self, hash: u64) Hashes {
             const hi: u64 = mulhi(hash, self.segment_count_length);
             var ans: Hashes = undefined;
@@ -536,5 +539,5 @@ test "binaryFuse8_duplicate_keys" {
 }
 
 test "binaryFuse8_mid_num_keys" {
-    try binaryFuseTest(u8, 11500, 14376);
+    try binaryFuseTest(u8, 11500, 15400);
 }

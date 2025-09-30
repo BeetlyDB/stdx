@@ -497,6 +497,10 @@ pub fn benchWhashStdU64(_: Allocator, _: *Timer) !void {
     _ = std.hash.Wyhash.hash(0, std.mem.asBytes(&key));
 }
 
+pub fn benchXXhashStdU64(_: Allocator, _: *Timer) !void {
+    _ = std.hash.XxHash64.hash(0, std.mem.asBytes(&key));
+}
+
 pub fn benchMurMurU64(_: Allocator, _: *Timer) !void {
     _ = stdx.hash.murmur64(key);
 }
@@ -549,4 +553,6 @@ pub fn main() !void {
     r9.print("std_whash (u64)");
     const r10 = try run(benchMurMurU64, opts);
     r10.print("murmur(u64)");
+    const r11 = try run(benchXXhashStdU64, opts);
+    r11.print("xxhash(u64)");
 }

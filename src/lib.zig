@@ -540,7 +540,11 @@ pub fn no_padding(comptime T: type) bool {
 pub inline fn set(comptime T: type, dest: []T, value: T) void {
     if (comptime @sizeOf(T) == 1) {
         if (comptime has_avx2) {
-            __folly_memset(@ptrCast(dest.ptr), @intCast(value), dest.len);
+            __folly_memset(
+                @ptrCast(dest.ptr),
+                @intCast(value),
+                dest.len,
+            );
             return;
         }
     }
