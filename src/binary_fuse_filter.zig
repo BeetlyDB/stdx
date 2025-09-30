@@ -80,8 +80,8 @@ pub fn BinaryFuse(comptime T: type) type {
         segment_count: u32,
         segment_count_length: u32,
         fingerprints: []T,
-        const bloom_bit_mask: T = 1 << (@bitSizeOf(T) - 1); // MSB для Bloom (e.g. 0x80 для u8)
-        const fingerprint_mask: T = ~bloom_bit_mask; // Остальные биты для fingerprint
+        const bloom_bit_mask: T = 1 << (@bitSizeOf(T) - 1); // MSB for Bloom (e.g. 0x80 for u8)
+        const fingerprint_mask: T = ~bloom_bit_mask; // Remaining bits for fingerprint
 
         const Self = @This();
 
