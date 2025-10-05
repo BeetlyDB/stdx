@@ -13,8 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#if defined(__AVX2__)
-
 #define LABEL(x)     .L##x
 
 .text
@@ -263,7 +261,6 @@ memset = __folly_memset
 
 #endif // FOLLY_MEMSET_IS_MEMSET
 
-#endif // __AVX2__
 #ifdef __linux__
 .section .note.GNU-stack, "", @progbits
 

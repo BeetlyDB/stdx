@@ -37,8 +37,6 @@
  *   - backward copy (unaligned load + aligned stores) 4 x 32 bytes at a time
  *   - unaligned store the first 4 x 32 bytes & last 32 bytes
  */
-#if defined(__AVX2__)
-
 #define REP_MOVSB_THRESHOLD $1024
 
 .file    "asm_folly.S"
@@ -291,8 +289,6 @@ memcpy = __folly_memcpy
 
 .weak   memmove
 memmove = __folly_memcpy
-
-#endif
 
 .ident "GCC: (GNU) 4.8.2"
 

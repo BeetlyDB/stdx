@@ -50,14 +50,21 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const has_avx2 = std.Target.x86.featureSetHas(builtin.cpu.features, .avx2);
+
+    if (has_avx2 and builtin.cpu.arch == .x86_64) {
+        lib_mod.addAssemblyFile(b.path("src/asm_folly.S"));
+        lib_mod.addAssemblyFile(b.path("src/asm_folly_memset.S"));
+    }
+
     b.modules.put("stdx", lib_mod) catch @panic("OOM");
     const lib = b.addLibrary(.{
         .linkage = .static,
         .name = "stdx",
         .root_module = lib_mod,
+        .use_llvm = true,
     });
-
-    addDep(lib, b);
+    // addDep(lib, b);
     b.installArtifact(lib);
 
     const bench_mod = b.createModule(.{

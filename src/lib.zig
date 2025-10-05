@@ -539,7 +539,7 @@ pub fn no_padding(comptime T: type) bool {
 
 pub inline fn set(comptime T: type, dest: []T, value: T) void {
     if (comptime @sizeOf(T) == 1) {
-        if (comptime has_avx2) {
+        if (comptime has_avx2 and builtin.cpu.arch == .x86_64) {
             __folly_memset(
                 @ptrCast(dest.ptr),
                 @intCast(value),
@@ -563,7 +563,7 @@ pub inline fn move(comptime T: type, dest: []T, source: []const T) void {
     if (comptime !has_avx2 and builtin.link_libc) {
         _ = memmove(dest.ptr, source.ptr, source.len * @sizeOf(T));
     }
-    if (comptime has_avx2) {
+    if (comptime has_avx2 and builtin.cpu.arch == .x86_64) {
         _ = __folly_memcpy(
             @ptrCast(dest.ptr),
             @ptrCast(source.ptr),
