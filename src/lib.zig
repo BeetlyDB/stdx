@@ -558,6 +558,18 @@ pub inline fn roundeven(x: anytype) @TypeOf(x) {
     }.@"llvm.roundeven"(x);
 }
 
+pub inline fn rotateLeft(x: u64, shift: u64) u64 {
+    return struct {
+        extern fn @"llvm.fshl.i64"(a: u64, b: u64, c: u64) u64;
+    }.@"llvm.fshl.i64"(x, x, shift);
+}
+
+pub inline fn rdtsc() u64 {
+    return struct {
+        extern fn @"llvm.readcyclecounter"() u64;
+    }.@"llvm.readcyclecounter"();
+}
+
 //Preferred use for all cases
 pub inline fn move(comptime T: type, dest: []T, source: []const T) void {
     if (comptime !has_avx2 and builtin.link_libc) {
