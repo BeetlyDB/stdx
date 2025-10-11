@@ -1,164 +1,115 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const List_Link = extern struct {
-    next: ?*List_Link = null,
-};
-
-/// An intrusive first in/first out linked list.
-/// The element type T must have a field called "link" of type ListType(T).Link.
-pub fn ListType(comptime T: type) type {
+pub fn InstrusiveLinkedList(comptime T: type) type {
     return struct {
-        any: ListAny,
+        const Self = @This();
 
-        pub const Link = List_Link;
-        const List = @This();
+        in: ?*T = null,
+        out: ?*T = null,
 
-        pub inline fn init() List {
-            return .{ .any = .{} };
+        pub fn push(self: *Self, elem: *T) void {
+            assert(elem.next == null);
+            if (self.in) |in| {
+                in.next = elem;
+                self.in = elem;
+            } else {
+                assert(self.out == null);
+                self.in = elem;
+                self.out = elem;
+            }
         }
 
-        pub inline fn push(self: *List, link: *T) void {
-            self.any.push(&link.link);
+        pub fn pop(self: *Self) ?*T {
+            const ret = self.out orelse return null;
+            self.out = ret.next;
+            ret.next = null;
+            if (self.in == ret) self.in = null;
+            return ret;
         }
 
-        pub inline fn pop(self: *List) ?*T {
-            const link = self.any.pop() orelse return null;
-            return @alignCast(@fieldParentPtr("link", link));
+        pub fn peek(self: Self) ?*T {
+            return self.out;
+        }
+        //O(n)
+        pub fn remove(self: *Self, to_remove: *T) void {
+            if (to_remove == self.out) {
+                _ = self.pop();
+                return;
+            }
+            var it = self.out;
+            while (it) |elem| : (it = elem.next) {
+                if (to_remove == elem.next) {
+                    if (to_remove == self.in) self.in = elem;
+                    elem.next = to_remove.next;
+                    to_remove.next = null;
+                    break;
+                }
+            } else unreachable;
         }
 
-        pub inline fn peek_last(self: *const List) ?*T {
-            const link = self.any.peek_last() orelse return null;
-            return @alignCast(@fieldParentPtr("link", link));
+        pub fn iterate(self: *const Self) Iterator {
+            return .{
+                .head = self.out,
+            };
         }
 
-        pub inline fn peek(self: *const List) ?*T {
-            const link = self.any.peek() orelse return null;
-            return @alignCast(@fieldParentPtr("link", link));
-        }
+        const Iterator = struct {
+            head: ?*Self,
 
-        pub fn count(self: *const List) u64 {
-            return self.any.count;
-        }
-
-        pub inline fn empty(self: *const List) bool {
-            return self.any.empty();
-        }
-
-        /// Returns whether the linked list contains the given *exact element* (pointer comparison).
-        pub inline fn contains(self: *const List, elem_needle: *const T) bool {
-            return self.any.contains(&elem_needle.link);
-        }
-
-        /// Remove an element from the Queue. Asserts that the element is
-        /// in the Queue. This operation is O(N), if this is done often you
-        /// probably want a different data structure.
-        pub inline fn remove(self: *List, to_remove: *T) void {
-            self.any.remove(&to_remove.link);
-        }
-
-        pub inline fn reset(self: *List) void {
-            self.any.reset();
-        }
-
-        pub inline fn iterate(self: *const List) Iterator {
-            return .{ .any = self.any.iterate() };
-        }
-
-        pub const Iterator = struct {
-            any: ListAny.Iterator,
-            pub inline fn next(iterator: *@This()) ?*T {
-                const link = iterator.any.next() orelse return null;
-                return @alignCast(@fieldParentPtr("link", link));
+            fn next(iterator: *Iterator) ?*Self {
+                const head = iterator.head orelse return null;
+                iterator.head = head.next;
+                return head;
             }
         };
     };
 }
 
-// Non-generic implementation for smaller binary and faster compile times.
-const ListAny = struct {
-    in: ?*List_Link = null,
-    out: ?*List_Link = null,
-    count: u64 = 0,
-    pub fn push(self: *ListAny, link: *List_Link) void {
-        assert(link.next == null);
-        if (self.in) |in| {
-            in.next = link;
-            self.in = link;
-        } else {
-            assert(self.out == null);
-            self.in = link;
-            self.out = link;
-        }
-        self.count += 1;
-    }
+test "push/pop/peek/remove" {
+    const testing = @import("std").testing;
 
-    pub fn pop(self: *ListAny) ?*List_Link {
-        const result = self.out orelse return null;
-        self.out = result.next;
-        result.next = null;
-        if (self.in == result) self.in = null;
-        self.count -= 1;
-        return result;
-    }
+    const Foo = struct { next: ?*@This() = null };
 
-    pub fn peek_last(self: *const ListAny) ?*List_Link {
-        return self.in;
-    }
+    var one: Foo = .{};
+    var two: Foo = .{};
+    var three: Foo = .{};
 
-    pub fn peek(self: *const ListAny) ?*List_Link {
-        return self.out;
-    }
+    var fifo: InstrusiveLinkedList(Foo) = .{};
 
-    pub fn empty(self: *const ListAny) bool {
-        return self.peek() == null;
-    }
+    fifo.push(&one);
+    try testing.expectEqual(@as(?*Foo, &one), fifo.peek());
 
-    pub fn contains(self: *const ListAny, needle: *const List_Link) bool {
-        var iterator = self.peek();
-        while (iterator) |link| : (iterator = link.next) {
-            if (link == needle) return true;
-        }
-        return false;
-    }
+    fifo.push(&two);
+    fifo.push(&three);
+    try testing.expectEqual(@as(?*Foo, &one), fifo.peek());
 
-    pub fn remove(self: *ListAny, to_remove: *List_Link) void {
-        if (to_remove == self.out) {
-            _ = self.pop();
-            return;
-        }
-        var it = self.out;
-        while (it) |link| : (it = link.next) {
-            if (to_remove == link.next) {
-                if (to_remove == self.in) self.in = link;
-                link.next = to_remove.next;
-                to_remove.next = null;
-                self.count -= 1;
-                break;
-            }
-        } else unreachable;
-    }
+    fifo.remove(&one);
+    try testing.expectEqual(@as(?*Foo, &two), fifo.pop());
+    try testing.expectEqual(@as(?*Foo, &three), fifo.pop());
+    try testing.expectEqual(@as(?*Foo, null), fifo.pop());
 
-    pub fn reset(self: *ListAny) void {
-        self.* = .{
-            .in = null,
-            .out = null,
-            .count = 0,
-        };
-    }
-    pub fn iterate(self: *const ListAny) Iterator {
-        return .{
-            .head = self.out,
-        };
-    }
+    fifo.push(&one);
+    fifo.push(&two);
+    fifo.push(&three);
+    fifo.remove(&two);
+    try testing.expectEqual(@as(?*Foo, &one), fifo.pop());
+    try testing.expectEqual(@as(?*Foo, &three), fifo.pop());
+    try testing.expectEqual(@as(?*Foo, null), fifo.pop());
 
-    const Iterator = struct {
-        head: ?*List_Link,
+    fifo.push(&one);
+    fifo.push(&two);
+    fifo.push(&three);
+    fifo.remove(&three);
+    try testing.expectEqual(@as(?*Foo, &one), fifo.pop());
+    try testing.expectEqual(@as(?*Foo, &two), fifo.pop());
+    try testing.expectEqual(@as(?*Foo, null), fifo.pop());
 
-        fn next(iterator: *Iterator) ?*List_Link {
-            const head = iterator.head orelse return null;
-            iterator.head = head.next;
-            return head;
-        }
-    };
-};
+    fifo.push(&one);
+    fifo.push(&two);
+    fifo.remove(&two);
+    fifo.push(&three);
+    try testing.expectEqual(@as(?*Foo, &one), fifo.pop());
+    try testing.expectEqual(@as(?*Foo, &three), fifo.pop());
+    try testing.expectEqual(@as(?*Foo, null), fifo.pop());
+}
