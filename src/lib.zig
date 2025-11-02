@@ -22,6 +22,18 @@ pub inline fn toUpper(c: u8) u8 {
     return upper_table[c];
 }
 
+const lower_table: [256]u8 = blk: {
+    var table: [256]u8 = undefined;
+    for (0..256) |i| {
+        table[i] = if (i >= 'A' and i <= 'Z') @intCast(i + 32) else @intCast(i);
+    }
+    break :blk table;
+};
+
+pub inline fn toLower(c: u8) u8 {
+    return lower_table[c];
+}
+
 pub const SPSC = @import("spscqueue_ring_buffer.zig");
 
 pub const Time = @import("time.zig");
