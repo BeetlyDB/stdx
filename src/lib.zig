@@ -4,6 +4,24 @@ const assert = std.debug.assert;
 const mem = std.mem;
 const testing = std.testing;
 
+pub const KiB = 1 << 10;
+pub const MiB = 1 << 20;
+pub const GiB = 1 << 30;
+pub const TiB = 1 << 40;
+pub const PiB = 1 << 50;
+
+const upper_table: [256]u8 = blk: {
+    var table: [256]u8 = undefined;
+    for (0..256) |i| {
+        table[i] = if (i >= 'a' and i <= 'z') @intCast(i - 32) else @intCast(i);
+    }
+    break :blk table;
+};
+
+pub inline fn toUpper(c: u8) u8 {
+    return upper_table[c];
+}
+
 pub const SPSC = @import("spscqueue_ring_buffer.zig");
 
 pub const Time = @import("time.zig");
