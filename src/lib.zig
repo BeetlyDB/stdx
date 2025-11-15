@@ -47,6 +47,8 @@ pub const MPMCQueue = @import("folly_mpmcqueue.zig").MPMCQueue;
 
 pub const Mutex = @import("mutex.zig").Mutex;
 
+pub const ptrs = @import("ptrs.zig");
+
 pub const ArrayList = @import("ArrayList.zig").AlignedList;
 
 pub const SmallSizeArenaAllocator = @import("ArenaAllocator.zig").ArenaAllocator;
