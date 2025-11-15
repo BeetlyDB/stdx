@@ -4,7 +4,7 @@ const std = @import("std");
 pub fn Cow(comptime T: type, comptime VTable: type) type {
     const info = @typeInfo(T);
     if (info == .pointer and info.pointer.size == .slice) {
-        @compileError("Cow should not be used with slice types. Use CowSlice or CowSliceZ instead.");
+        @compileError("Cow should not be used with slice types");
     }
 
     const Handler = struct {
