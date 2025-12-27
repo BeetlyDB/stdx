@@ -1,6 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const assert = std.debug.assert;
 const mem = std.mem;
 const testing = std.testing;
 
@@ -9,6 +8,16 @@ pub const MiB = 1 << 20;
 pub const GiB = 1 << 30;
 pub const TiB = 1 << 40;
 pub const PiB = 1 << 50;
+
+pub const assert = switch (builtin.mode) {
+    .Debug => std.debug.assert,
+
+    .ReleaseSmall, .ReleaseSafe, .ReleaseFast => (struct {
+        inline fn assert(ok: bool) void {
+            if (!ok) unreachable;
+        }
+    }).assert,
+};
 
 const upper_table: [256]u8 = blk: {
     var table: [256]u8 = undefined;
