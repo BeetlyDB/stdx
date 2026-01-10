@@ -191,9 +191,7 @@ pub const Mutex = struct {
 
         const state = self.state.load(.monotonic);
         if (state & WAITING != 0) {
-            if (@atomicRmw(usize, &self.state.raw, .Xchg, UNLOCKED, .release) != LOCKED) {
-                self.releaseSlow();
-            }
+            self.releaseSlow();
         }
     }
 
