@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Futex = std.Thread.Futex;
-const assert = std.debug.assert;
+const assert = @import("lib.zig").assert;
 
 cpu_count: usize,
 
@@ -187,24 +187,23 @@ pub const Mutex = struct {
     }
 
     inline fn release(self: *Mutex) void {
-        if (@atomicRmw(usize, &self.state.raw, .Xchg, UNLOCKED, .release) != LOCKED) {
-            self.releaseSlow();
+        self.state.store(UNLOCKED, .release);
+
+        const state = self.state.load(.monotonic);
+        if (state & WAITING != 0) {
+            if (@atomicRmw(usize, &self.state.raw, .Xchg, UNLOCKED, .release) != LOCKED) {
+                self.releaseSlow();
+            }
         }
     }
+
     inline fn acquireSlow(self: *Mutex) !void {
+        @branchHint(.cold);
         var waiter: Waiter = .{
             .tail = null,
             .prev = null,
             .next = null,
         };
-
-        var spin_count: usize = 0;
-        const ncpu = getCpuCount();
-        assert(ncpu != 0);
-        var max_spins: usize = 40;
-        if (ncpu > 4) {
-            max_spins = 100;
-        }
 
         var state = self.state.load(.acquire);
 
@@ -219,17 +218,7 @@ pub const Mutex = struct {
 
             const head: ?*Waiter = @ptrFromInt(state & WAITING);
             if (head == null) {
-                spin_count +%= 1;
                 try std.Thread.yield();
-                std.atomic.spinLoopHint();
-                state = self.state.load(.acquire);
-                continue;
-            }
-
-            if (spin_count < max_spins) {
-                spin_count += 1;
-                try std.Thread.yield();
-                std.atomic.spinLoopHint();
                 state = self.state.load(.acquire);
                 continue;
             }
@@ -249,7 +238,6 @@ pub const Mutex = struct {
             state = @cmpxchgWeak(usize, &self.state.raw, state, new_state, .release, .monotonic) orelse blk: {
                 const bitset = LOCKED | PARKED;
                 try waitBitset(&self.state, state, bitset, null);
-                spin_count = 0;
                 break :blk self.state.load(.acquire);
             };
         }
