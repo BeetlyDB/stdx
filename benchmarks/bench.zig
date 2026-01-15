@@ -225,7 +225,7 @@ pub fn benchMutexFutex(_: Allocator, _: *Timer) !void {
         threads[i] = try std.Thread.spawn(.{}, struct {
             fn run(conter: *i32, mx: *stdx.Mutex) !void {
                 for (0..ITERATIONS) |_| {
-                    try mx.lock();
+                    mx.lock();
                     defer mx.unlock();
                     conter.* += 1;
                 }
