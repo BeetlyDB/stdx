@@ -191,7 +191,7 @@ pub fn benchStdArena(allocator: Allocator, _: *Timer) !void {
 }
 
 pub fn benchMutexStd(_: Allocator, _: *Timer) !void {
-    const NUM_THREADS = 4;
+    const NUM_THREADS = 8;
     const ITERATIONS = 100_000;
 
     var mtx = std.Thread.Mutex{};
@@ -214,7 +214,7 @@ pub fn benchMutexStd(_: Allocator, _: *Timer) !void {
 }
 
 pub fn benchMutexFutex(_: Allocator, _: *Timer) !void {
-    const NUM_THREADS = 4;
+    const NUM_THREADS = 8;
     const ITERATIONS = 100_000;
 
     var mtx = stdx.Mutex{};
@@ -519,11 +519,11 @@ pub fn main() !void {
     const r4 = try run(benchRing_MT, opts);
     r4.print("LockFreeRingBuffer concurrent");
 
-    const r_std = try run(benchMutexStd, opts);
-    r_std.print("std.Thread.Mutex");
-
     const r_futex = try run(benchMutexFutex, opts);
     r_futex.print("Futex Mutex");
+
+    const r_std = try run(benchMutexStd, opts);
+    r_std.print("std.Thread.Mutex");
 
     // (8 byte)
     const inlsmll = try run(benchHashInlineSmall, opts);

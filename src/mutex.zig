@@ -9,8 +9,8 @@ pub const Mutex = struct {
             @panic("this implementation only for linux");
         }
     }
-
-    state: std.atomic.Value(u32) align(std.atomic.cache_line) = std.atomic.Value(u32).init(unlocked),
+    _: void align(std.atomic.cache_line) = {},
+    state: std.atomic.Value(u32) align(std.atomic.cache_line) = std.atomic.Value(u32).init(UNLOCKED),
 
     const unlocked: u32 = 0b00;
     const locked: u32 = 0b01;
@@ -18,6 +18,7 @@ pub const Mutex = struct {
     //
     const UNLOCKED = unlocked;
     const LOCKED = locked;
+    const CONTENDED = contended;
 
     inline fn wake(self: *Mutex) void {
         std.Thread.Futex.wake(&self.state, 1);
@@ -30,31 +31,38 @@ pub const Mutex = struct {
         if (comptime builtin.target.cpu.arch.isX86()) {
             return self.state.bitSet(@ctz(LOCKED), .acquire) == 0;
         }
+
         return self.state.cmpxchgWeak(UNLOCKED, LOCKED, .acquire, .monotonic) == null;
     }
 
     pub inline fn lock(self: *Mutex) void {
         if (!self.trylock()) {
-            @branchHint(.unlikely);
             self.lockSlow();
         }
     }
 
     pub inline fn unlock(self: *Mutex) void {
-
         // Release barrier ensures critical section happens before unlock
-        const state = self.state.swap(unlocked, .release);
-        assert(state != unlocked);
-
-        if (state == contended) {
-            self.wake();
+        switch (self.state.swap(UNLOCKED, .release)) {
+            UNLOCKED => unreachable,
+            LOCKED => {},
+            CONTENDED => self.wake(),
+            else => unreachable,
         }
     }
 
     fn lockSlow(self: *Mutex) void {
         @branchHint(.cold);
-
-        // If already contended, wait immediately to avoid unnecessary swap
+        var spin: u8 = 50;
+        while (spin > 0) : (spin -= 1) {
+            std.atomic.spinLoopHint();
+            switch (self.state.load(.monotonic)) {
+                UNLOCKED => if (self.trylock()) return,
+                LOCKED => continue,
+                CONTENDED => break,
+                else => unreachable,
+            }
+        }
         if (self.state.load(.monotonic) == contended) {
             self.wait(contended);
         }
@@ -64,7 +72,6 @@ pub const Mutex = struct {
             self.wait(contended);
         }
     }
-
     inline fn wait(self: *Mutex, expect: u32) void {
         std.Thread.Futex.wait(&self.state, expect);
     }
