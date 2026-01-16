@@ -9,7 +9,6 @@ pub const Mutex = struct {
             @panic("this implementation only for linux");
         }
     }
-    _: void align(std.atomic.cache_line) = {},
     state: std.atomic.Value(u32) align(std.atomic.cache_line) = std.atomic.Value(u32).init(UNLOCKED),
 
     const unlocked: u32 = 0b00;
@@ -53,23 +52,33 @@ pub const Mutex = struct {
 
     fn lockSlow(self: *Mutex) void {
         @branchHint(.cold);
-        var spin: u8 = 50;
-        while (spin > 0) : (spin -= 1) {
-            std.atomic.spinLoopHint();
-            switch (self.state.load(.monotonic)) {
-                UNLOCKED => if (self.trylock()) return,
-                LOCKED => continue,
-                CONTENDED => break,
-                else => unreachable,
+        var current_state = self.state.load(.monotonic);
+        if (current_state == UNLOCKED) {
+            if (self.trylock()) return;
+            current_state = self.state.load(.monotonic);
+        }
+
+        if (current_state == LOCKED) {
+            // Low contention
+            var spin: u8 = 50;
+            while (spin > 0) : (spin -= 1) {
+                std.atomic.spinLoopHint();
+                current_state = self.state.load(.monotonic);
+                if (current_state == UNLOCKED) {
+                    if (self.trylock()) return;
+                } else if (current_state == CONTENDED) {
+                    break;
+                }
             }
         }
-        if (self.state.load(.monotonic) == contended) {
-            self.wait(contended);
+
+        if (current_state == CONTENDED) {
+            self.wait(CONTENDED);
         }
 
         // Acquire with `contended` so next unlocker wakes another thread
-        while (self.state.swap(contended, .acquire) != unlocked) {
-            self.wait(contended);
+        while (self.state.swap(CONTENDED, .acquire) != UNLOCKED) {
+            self.wait(CONTENDED);
         }
     }
     inline fn wait(self: *Mutex, expect: u32) void {
