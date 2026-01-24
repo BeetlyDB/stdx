@@ -2,6 +2,7 @@ const std = @import("std");
 
 const Thread = std.Thread;
 const Allocator = std.mem.Allocator;
+const Mutex = @import("mutex.zig").Mutex;
 
 pub const GrowingOpts = struct {
     count: usize,
@@ -12,7 +13,7 @@ pub fn Growing(comptime T: type, comptime C: type) type {
         _ctx: C,
         _items: []*T,
         _available: usize,
-        _mutex: Thread.Mutex,
+        _mutex: Mutex,
         _allocator: Allocator,
 
         const Self = @This();

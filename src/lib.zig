@@ -10,11 +10,14 @@ pub const TiB = 1 << 40;
 pub const PiB = 1 << 50;
 
 pub const assert = switch (builtin.mode) {
-    .Debug => std.debug.assert,
+    .Debug, .ReleaseSafe => std.debug.assert,
 
-    .ReleaseSmall, .ReleaseSafe, .ReleaseFast => (struct {
+    .ReleaseSmall, .ReleaseFast => (struct {
         inline fn assert(ok: bool) void {
-            if (!ok) unreachable;
+            if (!ok) {
+                @branchHint(.cold);
+                unreachable;
+            }
         }
     }).assert,
 };

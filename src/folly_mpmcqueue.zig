@@ -1,8 +1,8 @@
 const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
-const assert = std.debug.assert;
 const lib = @import("lib.zig");
+const assert = lib.assert;
 
 pub fn MPMCQueue(comptime T: type) type {
     comptime {
