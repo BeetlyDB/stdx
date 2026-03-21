@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const mem = std.mem;
 const testing = std.testing;
+const math = std.math;
 
 pub const KiB = 1 << 10;
 pub const MiB = 1 << 20;
@@ -21,6 +22,124 @@ pub const assert = switch (builtin.mode) {
         }
     }).assert,
 };
+
+pub const digit_value: [256]u8 = blk: {
+    var table: [256]u8 = undefined;
+    @memset(&table, 255);
+
+    var c: u8 = '0';
+    while (c <= '9') : (c += 1) {
+        table[c] = c - '0';
+    }
+
+    c = 'A';
+    while (c <= 'F') : (c += 1) {
+        table[c] = c - 'A' + 10;
+    }
+
+    c = 'a';
+    while (c <= 'f') : (c += 1) {
+        table[c] = c - 'a' + 10;
+    }
+
+    break :blk table;
+};
+
+pub inline fn charToDigit(c: u8, base: u8) error{InvalidCharacter}!u8 {
+    const val = digit_value[c];
+    if (val >= base) return error.InvalidCharacter;
+    return val;
+}
+
+pub inline fn parseIntWithSign(
+    comptime Result: type,
+    comptime Character: type,
+    buf: []const Character,
+    base: u8,
+    comptime sign: enum { pos, neg },
+) !Result {
+    var buf_base = base;
+    var buf_start = buf;
+    if (base == 0) {
+        // Treat is as a decimal number by default.
+        buf_base = 10;
+        // Detect the base by looking at buf prefix.
+        if (buf.len > 2 and buf[0] == '0') {
+            if (math.cast(u8, buf[1])) |c| switch (toLower(c)) {
+                'b' => {
+                    buf_base = 2;
+                    buf_start = buf[2..];
+                },
+                'o' => {
+                    buf_base = 8;
+                    buf_start = buf[2..];
+                },
+                'x' => {
+                    buf_base = 16;
+                    buf_start = buf[2..];
+                },
+                else => {},
+            };
+        }
+    }
+
+    const add = switch (sign) {
+        .pos => math.add,
+        .neg => math.sub,
+    };
+
+    // accumulate into Accumulate which is always 8 bits or larger.  this prevents
+    // `buf_base` from overflowing Result.
+    const info = @typeInfo(Result);
+    const Accumulate = std.meta.Int(info.int.signedness, @max(8, info.int.bits));
+    var accumulate: Accumulate = 0;
+
+    if (buf_start[0] == '_' or buf_start[buf_start.len - 1] == '_') return error.InvalidCharacter;
+
+    for (buf_start) |c| {
+        if (c == '_') continue;
+        const digit = try charToDigit(math.cast(u8, c) orelse return error.InvalidCharacter, buf_base);
+        if (accumulate != 0) {
+            accumulate = try math.mul(Accumulate, accumulate, math.cast(Accumulate, buf_base) orelse return error.Overflow);
+        } else if (sign == .neg) {
+            // The first digit of a negative number.
+            // Consider parsing "-4" as an i3.
+            // This should work, but positive 4 overflows i3, so we can't cast the digit to T and subtract.
+            accumulate = math.cast(Accumulate, -@as(i8, @intCast(digit))) orelse return error.Overflow;
+            continue;
+        }
+        accumulate = try add(Accumulate, accumulate, math.cast(Accumulate, digit) orelse return error.Overflow);
+    }
+
+    return if (Result == Accumulate)
+        accumulate
+    else
+        math.cast(Result, accumulate) orelse return error.Overflow;
+}
+
+// test "charToDigit table" {
+//     try std.testing.expectEqual(@as(u8, 0), try charToDigit('0', 10));
+//     try std.testing.expectEqual(@as(u8, 9), try charToDigit('9', 10));
+//     try std.testing.expectEqual(@as(u8, 10), try charToDigit('A', 16));
+//     try std.testing.expectEqual(@as(u8, 15), try charToDigit('f', 16));
+//     try std.testing.expectError(error.InvalidCharacter, charToDigit('g', 16));
+//     try std.testing.expectError(error.InvalidCharacter, charToDigit('A', 10));
+//     try std.testing.expectError(error.InvalidCharacter, charToDigit(' ', 10));
+// }
+
+test "debug: charToDigit" {
+    try std.testing.expectEqual(@as(u8, 0), digit_value['0']);
+    try std.testing.expectEqual(@as(u8, 9), digit_value['9']);
+    try std.testing.expectEqual(@as(u8, 10), digit_value['A']);
+    try std.testing.expectEqual(@as(u8, 15), digit_value['F']);
+    try std.testing.expectEqual(@as(u8, 10), digit_value['a']);
+    try std.testing.expectEqual(@as(u8, 15), digit_value['f']);
+
+    try std.testing.expectEqual(@as(u8, 255), digit_value['G']);
+    try std.testing.expectEqual(@as(u8, 255), digit_value[' ']);
+    try std.testing.expectEqual(@as(u8, 255), digit_value[0]);
+    try std.testing.expectEqual(@as(u8, 255), digit_value[255]);
+}
 
 const upper_table: [256]u8 = blk: {
     var table: [256]u8 = undefined;
@@ -68,10 +187,6 @@ pub const SmallSizeArenaAllocator = @import("ArenaAllocator.zig").ArenaAllocator
 pub const Pool = @import("pool.zig").Growing;
 
 pub const ThreadPool = @import("threadpool.zig");
-
-pub const InstrusiveLinkedList = @import("linkedlist.zig");
-
-pub const InstrusiveStack = @import("stack.zig");
 
 pub const BinaryFuse = @import("binary_fuse_filter.zig");
 
@@ -494,6 +609,29 @@ pub inline fn isAscii(input: []const u8) bool {
         }
     }
     return false;
+}
+
+pub inline fn isDigit(input: []const u8) bool {
+    var i: usize = 0;
+    if (comptime suggestVectorLength(u8)) |vector_len| {
+        while (i + vector_len <= input.len) : (i += vector_len) {
+            const chunk: @Vector(vector_len, u8) = @as(@Vector(vector_len, u8), input[i..][0..vector_len].*);
+            const ge0 = chunk >= @as(@Vector(vector_len, u8), @splat('0'));
+            const le9 = chunk <= @as(@Vector(vector_len, u8), @splat('9'));
+            const is_digit_vec = ge0 & le9;
+
+            if (!@reduce(.And, is_digit_vec)) {
+                return false;
+            }
+        }
+    }
+    while (i < input.len) : (i += 1) {
+        switch (input[i]) {
+            '0'...'9' => {},
+            else => return false,
+        }
+    }
+    return true;
 }
 
 // TODO(zig): Zig 0.11 doesn't have the statfs / fstatfs syscalls to get the type of a filesystem.
