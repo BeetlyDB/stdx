@@ -23,6 +23,21 @@ pub const assert = switch (builtin.mode) {
     }).assert,
 };
 
+pub inline fn reduce(comptime T: type, hsh: T, n: T) T {
+    // http://lemire.me/blog/2016/06/27/a-fast-alternative-to-the-modulo-reduction
+    comptime assert(@typeInfo(T) == .int);
+    const W = @typeInfo(T).int.bits;
+    switch (W) {
+        32 => {
+            return @truncate((@as(u64, hsh) *% @as(u64, n)) >> 32);
+        },
+        64 => {
+            return @truncate((@as(u128, hsh) *% @as(u128, n)) >> 64);
+        },
+        else => @compileError("reduce: unsupported bit width"),
+    }
+}
+
 pub const digit_value: [256]u8 = blk: {
     var table: [256]u8 = undefined;
     @memset(&table, 255);
