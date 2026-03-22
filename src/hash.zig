@@ -325,3 +325,125 @@ pub inline fn _whash(data: []const u8, seed: u64) u64 {
 
     return _wmum(seed_var ^ see1, @as(u64, len) ^ _wyp4);
 }
+
+// ----------------FXHASH--------------------------
+pub const FxHasher = packed struct {
+    hash: usize = 0,
+
+    pub fn init(seed: usize) FxHasher {
+        return .{ .hash = seed };
+    }
+
+    pub fn default() FxHasher {
+        return .{ .hash = 0 };
+    }
+
+    inline fn add(self: *FxHasher, value: usize) void {
+        self.hash = self.hash +% value *% K;
+    }
+
+    pub fn update(self: *FxHasher, bytes: []const u8) void {
+        self.updateU64(hashBytes(bytes));
+    }
+
+    pub fn updateU8(self: *FxHasher, v: u8) void {
+        self.add(v);
+    }
+
+    pub fn updateU16(self: *FxHasher, v: u16) void {
+        self.add(v);
+    }
+
+    pub fn updateU32(self: *FxHasher, v: u32) void {
+        self.add(v);
+    }
+
+    pub inline fn updateU64(self: *FxHasher, v: u64) void {
+        self.add(@intCast(v));
+        if (@sizeOf(usize) == 4) {
+            self.add(@intCast(v >> 32));
+        }
+    }
+
+    pub fn updateUsize(self: *FxHasher, v: usize) void {
+        self.add(v);
+    }
+    pub inline fn finish(self: FxHasher) u64 {
+        const rotate_bits: u5 = if (@sizeOf(usize) == 8) 26 else 15;
+        return lib.rotateLeft(self.hash, rotate_bits);
+    }
+};
+
+pub inline fn fxhash(k: u64, seed: u64) u64 {
+    var f: FxHasher = .init(seed);
+    f.updateU64(k);
+    return f.finish();
+}
+
+// MCG (Steele & Vigna)
+const K: usize = if (@sizeOf(usize) == 8)
+    0xf1357aea2e62a9c5
+else
+    0x93d765dd;
+
+const SEED1: u64 = 0x243f6a8885a308d3;
+const SEED2: u64 = 0x13198a2e03707344;
+const ANTI_ZERO: u64 = 0xa4093822299f31d0;
+
+inline fn multiplyMix(a: u64, b: u64) u64 {
+    if (comptime @sizeOf(usize) == 8 and !@hasDecl(@import("builtin"), "target") or
+        builtin.cpu.arch.isArm() or
+        builtin.cpu.arch.isX86() or
+        builtin.cpu.arch.isWasm())
+    {
+        const full: u128 = (@as(u128, a) *% @as(u128, b));
+        const lo = @as(u64, @truncate(full));
+        const hi = @as(u64, @truncate(full >> 64));
+        return lo ^ hi;
+    } else {
+        const ax = @as(u32, @truncate(a));
+        const ay = @as(u32, @truncate(a >> 32));
+        const bx = @as(u32, @truncate(b));
+        const by = @as(u32, @truncate(b >> 32));
+
+        const p1 = (@as(u64, ax) *% @as(u64, by));
+        const p2 = (@as(u64, ay) *% @as(u64, bx));
+        return p1 ^ (p2 >> 32) | (p2 << 32); // rotate_right 32
+    }
+}
+
+pub fn hashBytes(bytes: []const u8) u64 {
+    const len = bytes.len;
+    var s0: u64 = SEED1;
+    var s1: u64 = SEED2;
+
+    if (len <= 16) {
+        if (len >= 8) {
+            s0 ^= std.mem.readInt(u64, bytes[0..8], .little);
+            s1 ^= std.mem.readInt(u64, bytes[len - 8 ..][0..8], .little);
+        } else if (len >= 4) {
+            s0 ^= std.mem.readInt(u32, bytes[0..4], .little);
+            s1 ^= std.mem.readInt(u32, bytes[len - 4 ..][0..4], .little);
+        } else if (len > 0) {
+            const lo = bytes[0];
+            const mid = bytes[len / 2];
+            const hi = bytes[len - 1];
+            s0 ^= lo;
+            s1 ^= (@as(u64, hi) << 8) | mid;
+        }
+    } else {
+        var i: usize = 0;
+        while (i + 16 <= len) : (i += 16) {
+            const x = std.mem.readInt(u64, bytes[i..][0..8], .little);
+            const y = std.mem.readInt(u64, bytes[i + 8 ..][0..8], .little);
+            const t = multiplyMix(s0 ^ x, ANTI_ZERO ^ y);
+            s0 = s1;
+            s1 = t;
+        }
+        const tail = bytes[len - 16 ..];
+        s0 ^= std.mem.readInt(u64, tail[0..8], .little);
+        s1 ^= std.mem.readInt(u64, tail[8..16], .little);
+    }
+
+    return multiplyMix(s0, s1) ^ @as(u64, @intCast(len));
+}

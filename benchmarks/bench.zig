@@ -489,6 +489,10 @@ pub fn benchInlineU64(_: Allocator, _: *Timer) !void {
     _ = stdx.hash.hash_inline(key);
 }
 
+pub fn benchFxHashU64(_: Allocator, _: *Timer) !void {
+    _ = stdx.hash.fxhash(key, 0);
+}
+
 pub fn benchWhashU64(_: Allocator, _: *Timer) !void {
     _ = stdx.hash._wx64(key);
 }
@@ -555,4 +559,6 @@ pub fn main() !void {
     r10.print("murmur(u64)");
     const r11 = try run(benchXXhashStdU64, opts);
     r11.print("xxhash(u64)");
+    const r12 = try run(benchFxHashU64, opts);
+    r12.print("fxhash(u64)");
 }
