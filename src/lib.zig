@@ -205,6 +205,8 @@ pub const ThreadPool = @import("threadpool.zig");
 
 pub const BinaryFuse = @import("binary_fuse_filter.zig");
 
+pub const crc = @import("crc.zig");
+
 pub const BinaryFuseu8 = BinaryFuse.BinaryFuse(u8);
 
 const native_endian = builtin.cpu.arch.endian();
