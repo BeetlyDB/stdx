@@ -1,8 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const mem = std.mem;
-const testing = std.testing;
 const math = std.math;
+const testing = std.testing;
 
 pub const KiB = 1 << 10;
 pub const MiB = 1 << 20;
@@ -10,33 +10,7 @@ pub const GiB = 1 << 30;
 pub const TiB = 1 << 40;
 pub const PiB = 1 << 50;
 
-pub const assert = switch (builtin.mode) {
-    .Debug, .ReleaseSafe => std.debug.assert,
-
-    .ReleaseSmall, .ReleaseFast => (struct {
-        inline fn assert(ok: bool) void {
-            if (!ok) {
-                @branchHint(.cold);
-                unreachable;
-            }
-        }
-    }).assert,
-};
-
-pub inline fn reduce(comptime T: type, hsh: T, n: T) T {
-    // http://lemire.me/blog/2016/06/27/a-fast-alternative-to-the-modulo-reduction
-    comptime assert(@typeInfo(T) == .int);
-    const W = @typeInfo(T).int.bits;
-    switch (W) {
-        32 => {
-            return @truncate((@as(u64, hsh) *% @as(u64, n)) >> 32);
-        },
-        64 => {
-            return @truncate((@as(u128, hsh) *% @as(u128, n)) >> 64);
-        },
-        else => @compileError("reduce: unsupported bit width"),
-    }
-}
+pub const Queue = @import("queue.zig");
 
 pub const digit_value: [256]u8 = blk: {
     var table: [256]u8 = undefined;
@@ -60,10 +34,110 @@ pub const digit_value: [256]u8 = blk: {
     break :blk table;
 };
 
+pub const crc = @import("crc.zig");
+
+pub inline fn reduce(comptime T: type, hsh: T, n: T) T {
+    // http://lemire.me/blog/2016/06/27/a-fast-alternative-to-the-modulo-reduction
+    comptime assert(@typeInfo(T) == .int);
+    const W = @typeInfo(T).int.bits;
+    switch (W) {
+        32 => {
+            return @truncate((@as(u64, hsh) *% @as(u64, n)) >> 32);
+        },
+        64 => {
+            return @truncate((@as(u128, hsh) *% @as(u128, n)) >> 64);
+        },
+        else => @compileError("reduce: unsupported bit width"),
+    }
+}
+
 pub inline fn charToDigit(c: u8, base: u8) error{InvalidCharacter}!u8 {
     const val = digit_value[c];
     if (val >= base) return error.InvalidCharacter;
     return val;
+}
+
+pub inline fn isPowerOfTwo(x: anytype) bool {
+    return @popCount(rInt(x)) == 1;
+}
+
+fn rInt(x: anytype) Reified(@TypeOf(x)) {
+    return rIntT(@TypeOf(x), x);
+}
+fn rIntT(I: type, x: I) Reified(I) {
+    return switch (@typeInfo(I)) {
+        .int => x,
+        .comptime_int => @as(usize, @intCast(x)),
+        else => @compileError("This function only works with integers, received " ++ @typeName(I)),
+    };
+}
+
+fn Reified(I: type) type {
+    return if (I == comptime_int) usize else I;
+}
+
+pub const assert = switch (builtin.mode) {
+    .Debug => std.debug.assert,
+
+    .ReleaseSmall, .ReleaseSafe, .ReleaseFast => (struct {
+        inline fn assert(ok: bool) void {
+            if (!ok) {
+                @branchHint(.cold);
+                unreachable;
+            }
+        }
+    }).assert,
+};
+
+pub inline fn mfence() void {
+    asm volatile ("mfence" ::: .{ .memory = true });
+}
+
+const upper_table: [256]u8 = blk: {
+    var table: [256]u8 = undefined;
+    for (0..256) |i| {
+        table[i] = if (i >= 'a' and i <= 'z') @intCast(i - 32) else @intCast(i);
+    }
+    break :blk table;
+};
+
+pub inline fn toUpper(c: u8) u8 {
+    return upper_table[c];
+}
+
+const lower_table: [256]u8 = blk: {
+    var table: [256]u8 = undefined;
+    for (0..256) |i| {
+        table[i] = if (i >= 'A' and i <= 'Z') @intCast(i + 32) else @intCast(i);
+    }
+    break :blk table;
+};
+
+pub inline fn toLower(c: u8) u8 {
+    return lower_table[c];
+}
+
+pub fn parseUnsigned(comptime T: type, buf: []const u8, base: u8) !T {
+    return parseIntWithSign(T, u8, buf, base, .pos);
+}
+
+pub const ptrs = @import("ptrs.zig");
+
+pub fn parseInt(comptime T: type, buf: []const u8, base: u8) !T {
+    return parseIntWithGenericCharacter(T, u8, buf, base);
+}
+
+/// Like `parseInt`, but with a generic `Character` type.
+pub fn parseIntWithGenericCharacter(
+    comptime Result: type,
+    comptime Character: type,
+    buf: []const Character,
+    base: u8,
+) !Result {
+    if (buf.len == 0) return error.InvalidCharacter;
+    if (buf[0] == '+') return parseIntWithSign(Result, Character, buf[1..], base, .pos);
+    if (buf[0] == '-') return parseIntWithSign(Result, Character, buf[1..], base, .neg);
+    return parseIntWithSign(Result, Character, buf, base, .pos);
 }
 
 pub inline fn parseIntWithSign(
@@ -132,70 +206,30 @@ pub inline fn parseIntWithSign(
         math.cast(Result, accumulate) orelse return error.Overflow;
 }
 
-// test "charToDigit table" {
-//     try std.testing.expectEqual(@as(u8, 0), try charToDigit('0', 10));
-//     try std.testing.expectEqual(@as(u8, 9), try charToDigit('9', 10));
-//     try std.testing.expectEqual(@as(u8, 10), try charToDigit('A', 16));
-//     try std.testing.expectEqual(@as(u8, 15), try charToDigit('f', 16));
-//     try std.testing.expectError(error.InvalidCharacter, charToDigit('g', 16));
-//     try std.testing.expectError(error.InvalidCharacter, charToDigit('A', 10));
-//     try std.testing.expectError(error.InvalidCharacter, charToDigit(' ', 10));
-// }
-
-test "debug: charToDigit" {
-    try std.testing.expectEqual(@as(u8, 0), digit_value['0']);
-    try std.testing.expectEqual(@as(u8, 9), digit_value['9']);
-    try std.testing.expectEqual(@as(u8, 10), digit_value['A']);
-    try std.testing.expectEqual(@as(u8, 15), digit_value['F']);
-    try std.testing.expectEqual(@as(u8, 10), digit_value['a']);
-    try std.testing.expectEqual(@as(u8, 15), digit_value['f']);
-
-    try std.testing.expectEqual(@as(u8, 255), digit_value['G']);
-    try std.testing.expectEqual(@as(u8, 255), digit_value[' ']);
-    try std.testing.expectEqual(@as(u8, 255), digit_value[0]);
-    try std.testing.expectEqual(@as(u8, 255), digit_value[255]);
-}
-
-const upper_table: [256]u8 = blk: {
-    var table: [256]u8 = undefined;
-    for (0..256) |i| {
-        table[i] = if (i >= 'a' and i <= 'z') @intCast(i - 32) else @intCast(i);
-    }
-    break :blk table;
-};
-
-pub inline fn toUpper(c: u8) u8 {
-    return upper_table[c];
-}
-
-const lower_table: [256]u8 = blk: {
-    var table: [256]u8 = undefined;
-    for (0..256) |i| {
-        table[i] = if (i >= 'A' and i <= 'Z') @intCast(i + 32) else @intCast(i);
-    }
-    break :blk table;
-};
-
-pub inline fn toLower(c: u8) u8 {
-    return lower_table[c];
+test "charToDigit table" {
+    try std.testing.expectEqual(@as(u8, 0), try charToDigit('0', 10));
+    try std.testing.expectEqual(@as(u8, 9), try charToDigit('9', 10));
+    try std.testing.expectEqual(@as(u8, 10), try charToDigit('A', 16));
+    try std.testing.expectEqual(@as(u8, 15), try charToDigit('f', 16));
+    try std.testing.expectError(error.InvalidCharacter, charToDigit('g', 16));
+    try std.testing.expectError(error.InvalidCharacter, charToDigit('A', 10));
+    try std.testing.expectError(error.InvalidCharacter, charToDigit(' ', 10));
 }
 
 pub const SPSC = @import("spscqueue_ring_buffer.zig");
 
-pub const Time = @import("time.zig");
-
-pub const LockFreeRingBuffer = @import("folly_lock_free_ringbuffer.zig").LockFreeRingBuffer;
+pub const prng = @import("prng.zig");
 
 pub const RingBuffer = @import("ring_buffer.zig").RingBuffer;
 
 pub const hash = @import("hash.zig");
+
 pub const MPMCQueue = @import("folly_mpmcqueue.zig").MPMCQueue;
 
+pub const IntrusiveLifo = Queue.IntrusiveLifo;
+pub const IntrusiveFifo = Queue.Intrusive;
+
 pub const Mutex = @import("mutex.zig").Mutex;
-
-pub const ptrs = @import("ptrs.zig");
-
-pub const ArrayList = @import("ArrayList.zig").AlignedList;
 
 pub const SmallSizeArenaAllocator = @import("ArenaAllocator.zig").ArenaAllocator;
 
@@ -205,8 +239,6 @@ pub const ThreadPool = @import("threadpool.zig");
 
 pub const BinaryFuse = @import("binary_fuse_filter.zig");
 
-pub const crc = @import("crc.zig");
-
 pub const BinaryFuseu8 = BinaryFuse.BinaryFuse(u8);
 
 const native_endian = builtin.cpu.arch.endian();
@@ -215,13 +247,6 @@ const has_avx2 = std.Target.x86.featureSetHas(builtin.cpu.features, .avx2);
 
 test {
     std.testing.refAllDecls(@This());
-}
-
-pub inline fn isPowerOfTwo(comptime T: type) bool {
-    comptime switch (@typeInfo(T)) {
-        .int => return (T & (T - 1)) == 0,
-        else => return false,
-    };
 }
 
 //=====================GENERAL PURPOSE UTILS================================
@@ -239,19 +264,38 @@ pub fn setYadro(cpu: usize) void {
     _ = std.os.linux.syscall3(.sched_setaffinity, @as(usize, @bitCast(@as(isize, 0))), @sizeOf(std.os.linux.cpu_set_t), @intFromPtr(&cpu_set));
 }
 
+pub fn tryBoostNice() !void {
+    const target: i32 = -20;
+
+    const rc = std.os.linux.syscall3(
+        .setpriority,
+        0,
+        0,
+        @bitCast(@as(isize, target)),
+    );
+
+    if (rc > -4096) return;
+
+    const errno: u16 = @truncate(@as(u16, @bitCast(-rc)));
+    return switch (@as(std.os.linux.E, @enumFromInt(errno))) {
+        .ACCES, .PERM => error.PermissionDenied,
+        else => |e| std.posix.unexpectedErrno(e),
+    };
+}
+
 pub inline fn copy(comptime T: type, dest: []T, source: []const T) void {
-    if (builtin.link_libc) {
-        _ = memcpy(dest.ptr, source.ptr, source.len * @sizeOf(T));
-    }
-    if (comptime has_avx2) {
-        _ = __folly_memcpy(
-            @ptrCast(dest.ptr),
-            @ptrCast(source.ptr),
-            source.len * @sizeOf(T),
-        );
-    } else {
-        @memcpy(dest[0..source.len], source);
-    }
+    // if (builtin.link_libc) {
+    //     _ = memcpy(dest.ptr, source.ptr, source.len * @sizeOf(T));
+    // }
+    // if (comptime has_avx2) {
+    //     _ = __folly_memcpy(
+    //         @ptrCast(dest.ptr),
+    //         @ptrCast(source.ptr),
+    //         source.len * @sizeOf(T),
+    //     );
+    // } else {
+    @memcpy(dest[0..source.len], source);
+    // }
 }
 
 pub const Vct = struct {
@@ -352,6 +396,26 @@ pub inline fn mulWrappingAdd(vec1: @Vector(8, i16), vec2: @Vector(8, i16)) @Vect
         },
         else => @compileError("Intrinsic not implemented for this target"),
     }
+}
+
+extern fn @"llvm.x86.pclmulqdq"(a: @Vector(2, u64), b: @Vector(2, u64), imm8: i32) @Vector(2, u64);
+
+pub inline fn clmul_lo(a: @Vector(2, u64), b: @Vector(2, u64)) @Vector(2, u64) {
+    return @"llvm.x86.pclmulqdq"(a, b, 0);
+}
+
+pub inline fn clmul_hi(a: @Vector(2, u64), b: @Vector(2, u64)) @Vector(2, u64) {
+    return @"llvm.x86.pclmulqdq"(a, b, 0x11);
+}
+
+extern fn @"llvm.x86.pclmulqdq.512"(a: @Vector(8, u64), b: @Vector(8, u64), imm8: i8) @Vector(8, u64);
+
+pub inline fn clmul_lo_512(a: @Vector(8, u64), b: @Vector(8, u64)) @Vector(8, u64) {
+    return @"llvm.x86.pclmulqdq.512"(a, b, 0);
+}
+
+pub inline fn clmul_hi_512(a: @Vector(8, u64), b: @Vector(8, u64)) @Vector(8, u64) {
+    return @"llvm.x86.pclmulqdq.512"(a, b, 0x11);
 }
 
 pub inline fn clmul(m: u64) u64 {
@@ -610,6 +674,13 @@ inline fn eqlBytes(a: []const u8, b: []const u8) bool {
 }
 
 pub inline fn isAscii(input: []const u8) bool {
+    if (input.len <= 16) {
+        inline for (0..16) |idx| {
+            if (idx >= input.len) break;
+            if (input[idx] > 128) return false;
+        }
+        return true;
+    }
     var remain = input;
     if (comptime suggestVectorLength(u8)) |vector_len| {
         while (remain.len > vector_len) {
@@ -629,6 +700,13 @@ pub inline fn isAscii(input: []const u8) bool {
 }
 
 pub inline fn isDigit(input: []const u8) bool {
+    if (input.len <= 16) {
+        inline for (0..16) |idx| {
+            if (idx >= input.len) break;
+            if (input[idx] < '0' or input[idx] > '9') return false;
+        }
+        return true;
+    }
     var i: usize = 0;
     if (comptime suggestVectorLength(u8)) |vector_len| {
         while (i + vector_len <= input.len) : (i += vector_len) {
@@ -651,7 +729,19 @@ pub inline fn isDigit(input: []const u8) bool {
     return true;
 }
 
-// TODO(zig): Zig 0.11 doesn't have the statfs / fstatfs syscalls to get the type of a filesystem.
+test "all digits true" {
+    try std.testing.expect(isDigit("1234567890"));
+    try std.testing.expect(isDigit("0"));
+    try std.testing.expect(isDigit("999999"));
+}
+
+test "one not digit false" {
+    try std.testing.expect(!isDigit("123a456"));
+    try std.testing.expect(!isDigit("a"));
+    try std.testing.expect(!isDigit("123456789 "));
+    try std.testing.expect(!isDigit("-123"));
+}
+
 // Once those are available, this can be removed.
 // The `statfs` definition used by the Linux kernel, and the magic number for tmpfs, from
 // `man 2 fstatfs`.
@@ -684,7 +774,6 @@ pub fn fstatfs(fd: i32, statfs_buf: *StatFs) usize {
     );
 }
 
-/// Checks that a type does not have implicit padding.
 pub fn no_padding(comptime T: type) bool {
     comptime switch (@typeInfo(T)) {
         .void => return true,
@@ -726,7 +815,7 @@ pub fn no_padding(comptime T: type) bool {
             return no_padding(info.tag_type);
         },
         .pointer => |info| {
-            if (info.size == .Slice and info.child == u8 and info.is_const) {
+            if (info.size == .slice and info.child == u8 and info.is_const) {
                 return true;
             }
             return false;
@@ -737,30 +826,18 @@ pub fn no_padding(comptime T: type) bool {
 }
 
 pub inline fn set(comptime T: type, dest: []T, value: T) void {
-    if (comptime @sizeOf(T) == 1) {
-        if (comptime has_avx2 and builtin.cpu.arch == .x86_64) {
-            __folly_memset(
-                @ptrCast(dest.ptr),
-                @intCast(value),
-                dest.len,
-            );
-            return;
-        }
-    }
+    // if (comptime @sizeOf(T) == 1) {
+    //     if (comptime has_avx2 and builtin.cpu.arch == .x86_64) {
+    //         __folly_memset(
+    //             @ptrCast(dest.ptr),
+    //             @intCast(value),
+    //             dest.len,
+    //         );
+    //         return;
+    //     }
+    // }
 
     @memset(dest, value);
-}
-
-pub inline fn roundeven(x: anytype) @TypeOf(x) {
-    return struct {
-        extern fn @"llvm.roundeven"(@TypeOf(x)) @TypeOf(x);
-    }.@"llvm.roundeven"(x);
-}
-
-pub inline fn rotateLeft(x: u64, shift: u64) u64 {
-    return struct {
-        extern fn @"llvm.fshl.i64"(a: u64, b: u64, c: u64) u64;
-    }.@"llvm.fshl.i64"(x, x, shift);
 }
 
 pub inline fn rdtsc() u64 {
@@ -769,27 +846,36 @@ pub inline fn rdtsc() u64 {
     }.@"llvm.readcyclecounter"();
 }
 
+pub inline fn rotateLeft(x: u64, shift: u64) u64 {
+    return struct {
+        extern fn @"llvm.fshl.i64"(a: u64, b: u64, c: u64) u64;
+    }.@"llvm.fshl.i64"(x, x, shift);
+}
+
+pub inline fn roundeven(x: anytype) @TypeOf(x) {
+    return struct {
+        extern fn @"llvm.roundeven"(@TypeOf(x)) @TypeOf(x);
+    }.@"llvm.roundeven"(x);
+}
+
 //Preferred use for all cases
 pub inline fn move(comptime T: type, dest: []T, source: []const T) void {
-    if (comptime !has_avx2 and builtin.link_libc) {
-        _ = memmove(dest.ptr, source.ptr, source.len * @sizeOf(T));
-    }
-    if (comptime has_avx2 and builtin.cpu.arch == .x86_64) {
-        _ = __folly_memcpy(
-            @ptrCast(dest.ptr),
-            @ptrCast(source.ptr),
-            source.len * @sizeOf(T),
-        );
-    } else {
-        @memmove(dest, source);
-    }
+    // if (comptime has_avx2 and builtin.cpu.arch == .x86_64) {
+    //     _ = __folly_memcpy(
+    //         @ptrCast(dest.ptr),
+    //         @ptrCast(source.ptr),
+    //         source.len * @sizeOf(T),
+    //     );
+    // } else {
+    @memmove(dest, source);
+    // }
 }
 
 extern "c" fn memcpy(*anyopaque, *const anyopaque, usize) *anyopaque;
 extern "c" fn memmove(*anyopaque, *const anyopaque, usize) *anyopaque;
 
-extern fn __folly_memcpy(dest: *anyopaque, src: *const anyopaque, n: usize) *anyopaque;
-extern fn __folly_memset(dest: *anyopaque, ch: c_int, size: usize) void;
+// extern fn __folly_memcpy(dest: *anyopaque, src: *const anyopaque, n: usize) *anyopaque;
+// extern fn __folly_memset(dest: *anyopaque, ch: c_int, size: usize) void;
 
 test "eql-2" {
     try std.testing.expect(eql(u8, "abcd", "abcd"));
