@@ -147,6 +147,9 @@ pub inline fn parseIntWithSign(
     base: u8,
     comptime sign: enum { pos, neg },
 ) !Result {
+    // guard empty input, reached via parseUnsigned("") or a lone sign like "+"
+    // stripped to "", both would index an empty slice below
+    if (buf.len == 0) return error.InvalidCharacter;
     var buf_base = base;
     var buf_start = buf;
     if (base == 0) {
@@ -204,6 +207,15 @@ pub inline fn parseIntWithSign(
         accumulate
     else
         math.cast(Result, accumulate) orelse return error.Overflow;
+}
+
+test "parse empty and lone sign do not overflow" {
+    try std.testing.expectError(error.InvalidCharacter, parseUnsigned(u64, "", 10));
+    try std.testing.expectError(error.InvalidCharacter, parseInt(i64, "", 10));
+    try std.testing.expectError(error.InvalidCharacter, parseInt(i64, "+", 10));
+    try std.testing.expectError(error.InvalidCharacter, parseInt(i64, "-", 10));
+    try std.testing.expectEqual(@as(i64, -5), try parseInt(i64, "-5", 10));
+    try std.testing.expectEqual(@as(u64, 42), try parseUnsigned(u64, "42", 10));
 }
 
 test "charToDigit table" {
