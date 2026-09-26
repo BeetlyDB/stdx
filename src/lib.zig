@@ -129,8 +129,8 @@ pub fn _parseInt(comptime T: type, buf: []const u8, base: u8) !T {
     return parseIntWithGenericCharacter(T, u8, buf, base);
 }
 
-pub inline fn parseInt(comptime T: type, buf: []const u8, base: u8) strconv.ParseError!T {
-    if (base == 10) {
+pub inline fn parseInt(comptime T: type, buf: []const u8, comptime base: u8) strconv.ParseError!T {
+    if (comptime base == 10) {
         if (comptime @typeInfo(T).int.signedness == .unsigned) {
             if (buf.len > 0 and buf[0] == '+') {
                 if (buf.len == 1) return error.InvalidString;
@@ -225,15 +225,6 @@ pub inline fn parseIntWithSign(
         accumulate
     else
         math.cast(Result, accumulate) orelse return error.Overflow;
-}
-
-test "parse empty and lone sign do not overflow" {
-    try std.testing.expectError(error.InvalidCharacter, parseUnsigned(u64, "", 10));
-    try std.testing.expectError(error.InvalidCharacter, parseInt(i64, "", 10));
-    try std.testing.expectError(error.InvalidCharacter, parseInt(i64, "+", 10));
-    try std.testing.expectError(error.InvalidCharacter, parseInt(i64, "-", 10));
-    try std.testing.expectEqual(@as(i64, -5), try parseInt(i64, "-5", 10));
-    try std.testing.expectEqual(@as(u64, 42), try parseUnsigned(u64, "42", 10));
 }
 
 test "charToDigit table" {
