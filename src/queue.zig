@@ -1,5 +1,41 @@
+//! # Intrusive Data Structures
+//!
+//! Zero-allocation linked lists and stacks for allocator internals.
+//! Elements contain their own link pointers, avoiding metadata allocations.
+//!
+//! ## Available Types
+//!
+//! | Type                | Order | Use Case                        |
+//! |---------------------|-------|----------------------------------|
+//! | `Intrusive`         | FIFO  | Doubly-linked queue              |
+//! | `DoublyLinkedListType` | LIFO  | Doubly-linked stack           |
+//! | `QueueType`         | FIFO  | Singly-linked queue (simpler)    |
+//! | `IntrusiveLifo`     | LIFO  | Singly-linked stack (fastest)    |
+//!
+//! ## Design Principles
+//!
+//! 1. **Intrusive**: Elements embed their link pointers
+//! 2. **No Allocation**: Lists never allocate memory
+//! 3. **Stable Addresses**: Elements stay at same address
+//! 4. **Cache Friendly**: Prefetch hints for hot paths
+//!
+//! ## Example
+//!
+//! ```zig
+//! const Node = struct {
+//!     data: u32,
+//!     next: ?*@This() = null,
+//!     prev: ?*@This() = null,
+//! };
+//!
+//! const Queue = Intrusive(Node, .next, .prev);
+//! var q = Queue{};
+//! q.push(&node);
+//! const n = q.pop();
+//! ```
+
 const std = @import("std");
-const assert = @import("util.zig").assert;
+const assert = @import("lib.zig").assert;
 const builtin = @import("builtin");
 
 /// An intrusive queue implementation. The type T must have a field
@@ -32,7 +68,7 @@ pub fn Intrusive(
         count: u64 = 0,
 
         /// Enqueue a new element to the back of the queue.
-        pub fn push(self: *Self, v: *Node) void {
+        pub inline fn push(self: *Self, v: *Node) void {
             assert(@field(v, next_field) == null);
             assert(@field(v, prev_field) == null);
             if (self.tail) |tail| {
@@ -49,7 +85,7 @@ pub fn Intrusive(
         }
 
         /// Dequeue the next element from the queue.
-        pub fn pop(self: *Self) ?*Node {
+        pub inline fn pop(self: *Self) ?*Node {
             assert(self.count > 0);
             // The next element is in "head".
             const next = self.head orelse return null;
@@ -72,12 +108,12 @@ pub fn Intrusive(
         }
 
         /// Returns true if the queue is empty.
-        pub fn empty(self: *const Self) bool {
+        pub inline fn empty(self: *const Self) bool {
             return self.head == null;
         }
 
         /// Removes the item from the queue. Asserts that Queue contains the item
-        pub fn remove(self: *Self, item: *Node) void {
+        pub inline fn remove(self: *Self, item: *Node) void {
             assert(self.hasItem(item));
             assert(self.count > 0);
             const prev = @field(item, prev_field);
@@ -97,9 +133,10 @@ pub fn Intrusive(
 
             @field(item, next_field) = null;
             @field(item, prev_field) = null;
+            self.count -= 1;
         }
 
-        pub fn hasItem(self: *const Self, item: *Node) bool {
+        pub inline fn hasItem(self: *const Self, item: *Node) bool {
             var maybe_node = self.head;
             while (maybe_node) |node| {
                 if (node == item) return true;
@@ -173,7 +210,7 @@ pub fn DoublyLinkedListType(
         tail: ?*Node = null,
         count: u32 = 0,
 
-        pub fn contains(list: *const DoublyLinkedList, target: *const Node) bool {
+        pub inline fn contains(list: *const DoublyLinkedList, target: *const Node) bool {
             var count: u32 = 0;
 
             var iterator = list.tail;
@@ -199,12 +236,12 @@ pub fn DoublyLinkedListType(
             }
         }
 
-        pub fn empty(list: *const DoublyLinkedList) bool {
+        pub inline fn empty(list: *const DoublyLinkedList) bool {
             assert((list.count == 0) == (list.tail == null));
             return list.count == 0;
         }
 
-        pub fn push(list: *DoublyLinkedList, node: *Node) void {
+        pub inline fn push(list: *DoublyLinkedList, node: *Node) void {
             assert(@field(node, field_back) == null);
             assert(@field(node, field_next) == null);
 
@@ -222,10 +259,15 @@ pub fn DoublyLinkedListType(
             list.count += 1;
         }
 
-        pub fn pop(list: *DoublyLinkedList) ?*Node {
+        pub inline fn pop(list: *DoublyLinkedList) ?*Node {
             if (list.tail) |tail_old| {
                 assert(list.count > 0);
                 assert(@field(tail_old, field_next) == null);
+
+                if (@field(tail_old, field_back)) |prev| {
+                    @branchHint(.likely);
+                    @prefetch(prev, .{ .cache = .data, .locality = 3, .rw = .read });
+                }
 
                 list.tail = @field(tail_old, field_back);
                 list.count -= 1;
@@ -243,7 +285,7 @@ pub fn DoublyLinkedListType(
             }
         }
 
-        pub fn remove(list: *DoublyLinkedList, node: *Node) void {
+        pub inline fn remove(list: *DoublyLinkedList, node: *Node) void {
             assert(list.count > 0);
             assert(list.tail != null);
 
@@ -265,7 +307,6 @@ pub fn DoublyLinkedListType(
             @field(node, field_back) = null;
             @field(node, field_next) = null;
             list.count -= 1;
-
             assert((list.count == 0) == (list.tail == null));
         }
     };
@@ -371,7 +412,7 @@ const QueueAny = struct {
     out: ?*QueueLink = null,
     count: u64 = 0,
 
-    pub fn push(self: *QueueAny, link: *QueueLink) void {
+    pub inline fn push(self: *QueueAny, link: *QueueLink) void {
         assert(link.next == null);
         if (self.in) |in| {
             in.next = link;
@@ -384,7 +425,7 @@ const QueueAny = struct {
         self.count += 1;
     }
 
-    pub fn pop(self: *QueueAny) ?*QueueLink {
+    pub inline fn pop(self: *QueueAny) ?*QueueLink {
         const result = self.out orelse return null;
         self.out = result.next;
         result.next = null;
@@ -393,19 +434,19 @@ const QueueAny = struct {
         return result;
     }
 
-    pub fn peek_last(self: *const QueueAny) ?*QueueLink {
+    pub inline fn peek_last(self: *const QueueAny) ?*QueueLink {
         return self.in;
     }
 
-    pub fn peek(self: *const QueueAny) ?*QueueLink {
+    pub inline fn peek(self: *const QueueAny) ?*QueueLink {
         return self.out;
     }
 
-    pub fn empty(self: *const QueueAny) bool {
+    pub inline fn empty(self: *const QueueAny) bool {
         return self.peek() == null;
     }
 
-    pub fn contains(self: *const QueueAny, needle: *const QueueLink) bool {
+    pub inline fn contains(self: *const QueueAny, needle: *const QueueLink) bool {
         var iterator = self.peek();
         while (iterator) |link| : (iterator = link.next) {
             if (link == needle) return true;
@@ -413,7 +454,7 @@ const QueueAny = struct {
         return false;
     }
 
-    pub fn remove(self: *QueueAny, to_remove: *QueueLink) void {
+    pub inline fn remove(self: *QueueAny, to_remove: *QueueLink) void {
         if (to_remove == self.out) {
             _ = self.pop();
             return;
@@ -430,11 +471,11 @@ const QueueAny = struct {
         } else unreachable;
     }
 
-    pub fn reset(self: *QueueAny) void {
+    pub inline fn reset(self: *QueueAny) void {
         self.* = .{};
     }
 
-    pub fn iterate(self: *const QueueAny) Iterator {
+    pub inline fn iterate(self: *const QueueAny) Iterator {
         return .{
             .head = self.out,
         };
@@ -496,6 +537,9 @@ pub const IntrusiveLifoLink = extern struct {
 /// - The stack does NOT own elements
 /// - Caller is responsible for element lifetime
 ///
+/// Thread-safety:
+/// - NOT thread-safe
+/// - External synchronization required if used concurrently
 pub fn IntrusiveLifo(comptime T: type) type {
     return struct {
         any: IntrusiveLifoAny,
@@ -507,8 +551,15 @@ pub fn IntrusiveLifo(comptime T: type) type {
             return .{ .any = .{} };
         }
 
-        pub inline fn count(self: *Self) u64 {
-            return self.any.count;
+        /// O(n) count - only use for debugging
+        pub inline fn count(self: *const Self) u64 {
+            var n: u64 = 0;
+            var next = self.any.head;
+            while (next) |link| {
+                n += 1;
+                next = link.next;
+            }
+            return n;
         }
 
         /// Pushes a new node to the first position of the Stack.
@@ -578,29 +629,24 @@ pub fn IntrusiveLifo(comptime T: type) type {
 //     C.next = null
 //     pop() → C
 // head → A → B → null
+/// Optimized LIFO - minimal operations for hot path
 const IntrusiveLifoAny = struct {
     head: ?*IntrusiveLifoLink = null,
 
-    count: u64 = 0,
     const Self = @This();
 
     inline fn push(self: *Self, link: *IntrusiveLifoLink) void {
-        assert((self.count == 0) == (self.head == null));
-        assert(link.next == null);
-
-        // Insert the new element at the head.
         link.next = self.head;
         self.head = link;
-        self.count += 1;
     }
 
     inline fn pop(self: *Self) ?*IntrusiveLifoLink {
-        assert((self.count == 0) == (self.head == null));
-
         const link = self.head orelse return null;
         self.head = link.next;
-        link.next = null;
-        self.count -= 1;
+        if (link.next) |next_link| {
+            @branchHint(.likely);
+            @prefetch(next_link, .{ .cache = .data, .locality = 3, .rw = .read });
+        }
         return link;
     }
 
@@ -609,17 +655,16 @@ const IntrusiveLifoAny = struct {
     }
 
     inline fn empty(self: *const Self) bool {
-        assert((self.count == 0) == (self.head == null));
         return self.head == null;
     }
 
     inline fn contains(self: *const Self, needle: *const IntrusiveLifoLink) bool {
         var next = self.head;
-        for (0..self.count + 1) |_| {
-            const link = next orelse return false;
+        while (next) |link| {
             if (link == needle) return true;
             next = link.next;
-        } else unreachable;
+        }
+        return false;
     }
 };
 
@@ -658,4 +703,201 @@ test "Stack: push/pop/peek/empty" {
     try testing.expectEqual(@as(?*Item, &one), stack.pop());
     try testing.expect(stack.empty());
     try testing.expectEqual(@as(?*Item, null), stack.pop());
+}
+
+// =============================================================================
+// Unrolled LIFO - Batched free list for better cache locality
+// ============================================================================
+
+/// Unrolled LIFO node - stored in freed blocks themselves (for blocks >= 64 bytes).
+/// Each node contains multiple block pointers, amortizing cache miss over N pops.
+///
+/// Memory layout (64 bytes = 1 cache line):
+///   next:   8 bytes  - pointer to next node
+///   count:  1 byte   - number of valid pointers in blocks[]
+///   _pad:   7 bytes  - padding for alignment
+///   blocks: 48 bytes - 6 block pointers
+///
+/// This means we load one cache line and get up to 6 blocks from it,
+/// instead of chasing a pointer for every single block.
+pub const UnrolledNode = extern struct {
+    next: ?*UnrolledNode = null,
+    count: u8 = 0,
+    _pad: [7]u8 = undefined,
+    blocks: [BLOCKS_PER_NODE][*]u8 = undefined,
+
+    pub const BLOCKS_PER_NODE = 6;
+
+    comptime {
+        std.debug.assert(@sizeOf(UnrolledNode) == 64);
+    }
+};
+
+/// Unrolled LIFO stack for free block management.
+///
+/// Instead of a simple linked list where each pop chases a pointer,
+/// this batches multiple block pointers per node. Each node is 64 bytes
+/// (one cache line) and contains up to 6 block pointers.
+///
+/// Benefits:
+/// - Amortizes cache miss: 1 miss per 6 allocations vs 1 per allocation
+/// - Better prefetch efficiency: entire node loaded together
+/// - Reduced pointer chasing overhead
+///
+/// Requirements:
+/// - Block size must be >= 64 bytes (sizeof(UnrolledNode))
+/// - For smaller blocks, use regular IntrusiveLifo instead
+pub const UnrolledLifo = struct {
+    /// Current node being allocated from
+    head: ?*UnrolledNode = null,
+
+    const Self = @This();
+
+    pub inline fn init() Self {
+        return .{ .head = null };
+    }
+
+    /// Pop a block pointer from the unrolled list.
+    /// Returns null if list is empty.
+    pub inline fn pop(self: *Self) ?[*]u8 {
+        const node = self.head orelse return null;
+
+        if (node.count > 0) {
+            @branchHint(.likely);
+            // Fast path: decrement and return from current node
+            node.count -= 1;
+            const block = node.blocks[node.count];
+            // Prefetch next block for better pipelining
+            if (node.count > 0) {
+                @prefetch(node.blocks[node.count - 1], .{ .cache = .data, .locality = 3, .rw = .read });
+            }
+            return block;
+        }
+
+        // Current node is empty, move to next node
+        // The empty node itself becomes available (it's a freed block)
+        const empty_node_ptr: [*]u8 = @ptrCast(node);
+        self.head = node.next;
+
+        // Prefetch next node if exists
+        if (self.head) |next_node| {
+            @prefetch(next_node, .{ .cache = .data, .locality = 3, .rw = .read });
+        }
+
+        return empty_node_ptr;
+    }
+
+    /// Push a block pointer onto the unrolled list.
+    /// The block must be at least 64 bytes (sizeof(UnrolledNode)).
+    pub inline fn push(self: *Self, block: [*]u8) void {
+        if (self.head) |node| {
+            if (node.count < UnrolledNode.BLOCKS_PER_NODE) {
+                // Fast path: add to current node
+                node.blocks[node.count] = block;
+                node.count += 1;
+                return;
+            }
+        }
+
+        // Current node is full (or no node exists)
+        // Use the pushed block as a new node
+        const new_node: *UnrolledNode = @ptrCast(@alignCast(block));
+        new_node.* = .{
+            .next = self.head,
+            .count = 0,
+        };
+        self.head = new_node;
+    }
+
+    /// Check if list is empty
+    pub inline fn empty(self: *const Self) bool {
+        const node = self.head orelse return true;
+        // Empty if no head, or head has no items AND no next
+        return node.count == 0 and node.next == null;
+    }
+
+    /// Peek at the head node (for debugging/testing)
+    pub inline fn peek(self: *const Self) ?*UnrolledNode {
+        return self.head;
+    }
+
+    /// Push an entire linked list of blocks (from IntrusiveLifo) into this unrolled list.
+    /// This is used when collecting xthread_free or local_free.
+    /// Returns count of blocks pushed.
+    pub fn pushLinkedList(self: *Self, head_link: ?*IntrusiveLifoLink) usize {
+        var link = head_link;
+        var count: usize = 0;
+
+        while (link) |l| {
+            const block: [*]u8 = @ptrCast(l);
+            const next = l.next;
+            self.push(block);
+            link = next;
+            count += 1;
+        }
+
+        return count;
+    }
+
+    /// Convert unrolled list back to IntrusiveLifo linked list.
+    /// Used for compatibility with existing code paths.
+    pub inline fn toLinkedList(self: *Self) IntrusiveLifoAny {
+        var result = IntrusiveLifoAny{};
+
+        while (self.pop()) |block| {
+            const link: *IntrusiveLifoLink = @ptrCast(@alignCast(block));
+            link.next = result.head;
+            result.head = link;
+        }
+
+        return result;
+    }
+};
+
+test "UnrolledLifo: basic push/pop" {
+    const testing = @import("std").testing;
+
+    // Allocate some 64-byte aligned blocks for testing
+    var blocks: [10][64]u8 align(64) = undefined;
+
+    var lifo = UnrolledLifo.init();
+    try testing.expect(lifo.empty());
+
+    // Push blocks
+    for (0..10) |i| {
+        lifo.push(&blocks[i]);
+    }
+    try testing.expect(!lifo.empty());
+
+    // Pop should return blocks (order may vary due to batching)
+    var popped_count: usize = 0;
+    while (lifo.pop()) |_| {
+        popped_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 10), popped_count);
+    try testing.expect(lifo.empty());
+}
+
+test "UnrolledLifo: batching behavior" {
+    const testing = @import("std").testing;
+
+    var blocks: [20][64]u8 align(64) = undefined;
+    var lifo = UnrolledLifo.init();
+
+    // Push 20 blocks - should create multiple nodes
+    for (0..20) |i| {
+        lifo.push(&blocks[i]);
+    }
+
+    // First node acts as container, subsequent blocks fill it
+    // With BLOCKS_PER_NODE=6, we expect:
+    // - First block becomes node 1 (holds 0)
+    // - Next 6 blocks fill node 1
+    // - 7th block becomes node 2, etc.
+
+    var count: usize = 0;
+    while (lifo.pop()) |_| {
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 20), count);
 }

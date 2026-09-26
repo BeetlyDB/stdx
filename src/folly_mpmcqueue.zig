@@ -1,8 +1,8 @@
 const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
+const assert = std.debug.assert;
 const lib = @import("lib.zig");
-const assert = lib.assert;
 
 pub fn MPMCQueue(comptime T: type) type {
     comptime {
@@ -29,10 +29,16 @@ pub fn MPMCQueue(comptime T: type) type {
         _head: usize align(std.atomic.cache_line) = 0,
         _tail: usize align(std.atomic.cache_line) = 0,
         _slots: []Slot align(std.atomic.cache_line) = NoSlots,
+        // Power-of-two capacity, so slot index / turn use mask + shift instead of
+        // a runtime div/mod (the div showed up hot in cross-shard forwarding).
+        _mask: usize = 0,
+        _shift: u6 = 0,
         allocator: Allocator,
 
         pub fn init(allocator: std.mem.Allocator, _capacity: usize) !Self {
-            const slots = try allocator.alloc(Slot, _capacity + 1);
+            // Round capacity up to a power of two so nthSlot/nthTurn are mask/shift.
+            const cap = std.math.ceilPowerOfTwo(usize, @max(_capacity, 1)) catch _capacity;
+            const slots = try allocator.alloc(Slot, cap + 1);
             assert(@intFromPtr(slots.ptr) % std.atomic.cache_line == 0);
             assert(@intFromPtr(slots.ptr) % @alignOf(T) == 0);
             @memset(slots, .{});
@@ -41,7 +47,9 @@ pub fn MPMCQueue(comptime T: type) type {
             };
 
             self._slots.ptr = slots.ptr;
-            self._slots.len = _capacity;
+            self._slots.len = cap;
+            self._mask = cap - 1;
+            self._shift = @intCast(std.math.log2_int(usize, cap));
             self.allocator = allocator;
             return self;
         }
@@ -167,11 +175,11 @@ pub fn MPMCQueue(comptime T: type) type {
         }
 
         inline fn nthSlot(self: *Self, n: usize) *Slot {
-            return &self._slots[(n % self._slots.len)];
+            return &self._slots[n & self._mask];
         }
 
         inline fn nthTurn(self: *const Self, n: usize) usize {
-            return (n / self._slots.len) * 2;
+            return (n >> self._shift) * 2;
         }
     };
 }

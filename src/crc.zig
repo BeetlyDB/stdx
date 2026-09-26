@@ -16,18 +16,23 @@ const has_sse2 = std.Target.x86.featureSetHas(builtin.cpu.features, .sse2);
 const has_sse = std.Target.x86.featureSetHas(builtin.cpu.features, .sse);
 
 pub inline fn _mm_crc32_u16(crc: u32, v: u16) u32 {
-    if ((has_sse4_2) and is_x86_64) {
-        return struct {
-            extern fn @"llvm.x86.sse42.crc32.32.16"(u32, u16) u32;
-        }.@"llvm.x86.sse42.crc32.32.16"(crc, v);
-    }
+    return struct {
+        extern fn @"llvm.x86.sse42.crc32.32.16"(u32, u16) u32;
+    }.@"llvm.x86.sse42.crc32.32.16"(crc, v);
 }
 
 pub inline fn _mm_crc32_u32(crc: u32, v: u32) u32 {
-    if ((has_sse4_2) and is_x86_64) {
+    if ((has_sse4_2)) {
         return struct {
             extern fn @"llvm.x86.sse42.crc32.32.32"(u32, u32) u32;
         }.@"llvm.x86.sse42.crc32.32.32"(crc, v);
+    } else {
+        var r = crc;
+        asm ("crc32 %[b],%[r]"
+            : [r] "+r" (r),
+            : [b] "r" (v),
+        );
+        return r;
     }
 }
 
@@ -36,13 +41,18 @@ pub inline fn _mm_crc32_u64(crc: u64, v: u64) u64 {
         return struct {
             extern fn @"llvm.x86.sse42.crc32.64.64"(u64, u64) u64;
         }.@"llvm.x86.sse42.crc32.64.64"(crc, v);
+    } else {
+        var r = crc;
+        asm ("crc32 %[b],%[r]"
+            : [r] "+r" (r),
+            : [b] "r" (v),
+        );
+        return r;
     }
 }
 
 pub inline fn _mm_crc32_u8(crc: u32, v: u8) u32 {
-    if (is_x86_64 and (has_sse4_2)) {
-        return struct {
-            extern fn @"llvm.x86.sse42.crc32.32.8"(u32, u8) u32;
-        }.@"llvm.x86.sse42.crc32.32.8"(crc, v);
-    }
+    return struct {
+        extern fn @"llvm.x86.sse42.crc32.32.8"(u32, u8) u32;
+    }.@"llvm.x86.sse42.crc32.32.8"(crc, v);
 }

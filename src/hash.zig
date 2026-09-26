@@ -1,4 +1,5 @@
 const std = @import("std");
+
 const lib = @import("lib.zig");
 const assert = std.debug.assert;
 const builtin = @import("builtin");
@@ -11,16 +12,17 @@ const salt = [_]u64{
     0x1d8e4e27c47d124f,
 };
 
-pub inline fn hash_inline(value: anytype) u64 {
+pub inline fn hash_inline(value: anytype, seed: usize) u64 {
     comptime {
         assert(lib.no_padding(@TypeOf(value)));
         assert(std.meta.hasUniqueRepresentation(@TypeOf(value)) or
             (@typeInfo(@TypeOf(value)) == .pointer and
-                @typeInfo(@TypeOf(value)).pointer.size == .Slice and
+                @typeInfo(@TypeOf(value)).pointer.size == .slice and
                 @typeInfo(@TypeOf(value)).pointer.child == u8 and
                 @typeInfo(@TypeOf(value)).pointer.is_const));
     }
-    return low_level_hash(0, switch (@typeInfo(@TypeOf(value))) {
+
+    return low_level_hash(@intCast(seed), switch (@typeInfo(@TypeOf(value))) {
         .@"struct", .int => std.mem.asBytes(&value),
         .pointer => |info| if (info.size == .slice and info.child == u8 and info.is_const)
             value
@@ -31,8 +33,21 @@ pub inline fn hash_inline(value: anytype) u64 {
     });
 }
 
-/// Inline version of Google Abseil "LowLevelHash" (inspired by wyhash).
-/// https://github.com/abseil/abseil-cpp/blob/master/absl/hash/internal/low_level_hash.cc
+pub inline fn low_level_hash_u64(seed: u64, input: u64) u64 {
+    var state = seed ^ salt[0];
+    const chunk = @as(u64, @bitCast(input[0..8].*));
+    const mixed = @as(u64, chunk ^ salt[1]) *% (state ^ salt[2]);
+    state = mixed ^ (mixed >> 32);
+    return state;
+}
+
+inline fn mul128(lhs: u64, rhs: u64) u64 {
+    const product: u128 = @as(u128, lhs) * @as(u128, rhs);
+    const low: u64 = @truncate(product);
+    const high: u64 = @truncate(product >> 64);
+    return low ^ high;
+}
+
 inline fn low_level_hash(seed: u64, input: anytype) u64 {
     var in: []const u8 = input;
     var state = seed ^ salt[0];
@@ -54,7 +69,7 @@ inline fn low_level_hash(seed: u64, input: anytype) u64 {
         const mixed = mul128(chunk[0] ^ salt[1], chunk[1] ^ state);
         state = lib.rotateLeft(@as(u64, @truncate(mixed)), 32);
     }
-    var chunk = std.mem.zeroes([2]u64);
+    var chunk: [2]u64 = .{ 0, 0 };
     if (in.len > 8) {
         chunk[0] = @as(u64, @bitCast(in[0..8].*));
         chunk[1] = @as(u64, @bitCast(in[in.len - 8 ..][0..8].*));
@@ -68,13 +83,6 @@ inline fn low_level_hash(seed: u64, input: anytype) u64 {
     mixed = lib.rotateLeft(@as(u64, @truncate(mixed)), 32);
     mixed = mul128(@as(u64, @truncate(mixed)), @as(u64, starting_len) ^ salt[1]);
     return lib.rotateLeft(@as(u64, @truncate(mixed)), 32);
-}
-
-inline fn mul128(lhs: u64, rhs: u64) u64 {
-    const product: u128 = @as(u128, lhs) * @as(u128, rhs);
-    const low: u64 = @truncate(product);
-    const high: u64 = @truncate(product >> 64);
-    return low ^ high;
 }
 
 test "hash_collision_test" {
@@ -177,10 +185,21 @@ inline fn wyr3(p: [*]const u8, k: usize) u64 {
 }
 
 inline fn wyr4(p: [*]const u8) u64 {
-    return @as(u64, std.mem.readInt(u32, p[0..4], .little));
+    return @as(u64, p[0]) |
+        (@as(u64, p[1]) << 8) |
+        (@as(u64, p[2]) << 16) |
+        (@as(u64, p[3]) << 24);
 }
+
 inline fn wyr8(p: [*]const u8) u64 {
-    return std.mem.readInt(u64, p[0..8], .little);
+    return @as(u64, p[0]) |
+        (@as(u64, p[1]) << 8) |
+        (@as(u64, p[2]) << 16) |
+        (@as(u64, p[3]) << 24) |
+        (@as(u64, p[4]) << 32) |
+        (@as(u64, p[5]) << 40) |
+        (@as(u64, p[6]) << 48) |
+        (@as(u64, p[7]) << 56);
 }
 
 inline fn _wyr9(p: [*]const u8) u64 {
@@ -230,23 +249,16 @@ pub inline fn _whash(data: []const u8, seed: u64) u64 {
     var see1 = seed;
 
     if (len <= 0x03) {
-        @branchHint(.cold);
         return _wmum(_wmum(wyr3(p, len) ^ seed_var ^ _wyp0, seed_var ^ _wyp1) ^ seed_var, @as(u64, len) ^ _wyp4);
     } else if (len <= 0x08) {
-        @branchHint(.unlikely);
         return _wmum(_wmum(wyr4(off(p, 0x00)) ^ seed_var ^ _wyp0, wyr4(off(p, len - 0x04)) ^ seed_var ^ _wyp1) ^ seed_var, @as(u64, len) ^ _wyp4);
     } else if (len <= 0x10) {
-        @branchHint(.unlikely);
         return _wmum(_wmum(_wyr9(off(p, 0x00)) ^ seed_var ^ _wyp0, _wyr9(off(p, len - 0x08)) ^ seed_var ^ _wyp1) ^ seed_var, @as(u64, len) ^ _wyp4);
     } else if (len <= 0x18) {
-        @branchHint(.unlikely);
         return _wmum(_wmum(_wyr9(off(p, 0x00)) ^ seed_var ^ _wyp0, _wyr9(off(p, 0x08)) ^ seed_var ^ _wyp1) ^ _wmum(_wyr9(off(p, len - 0x08)) ^ seed_var ^ _wyp2, seed_var ^ _wyp3), @as(u64, len) ^ _wyp4);
     } else if (len <= 0x20) {
-        @branchHint(.unlikely);
-
         return _wmum(_wmum(_wyr9(off(p, 0x00)) ^ seed_var ^ _wyp0, _wyr9(off(p, 0x08)) ^ seed_var ^ _wyp1) ^ _wmum(_wyr9(off(p, 0x10)) ^ seed_var ^ _wyp2, _wyr9(off(p, len - 0x08)) ^ seed_var ^ _wyp3), @as(u64, len) ^ _wyp4);
     } else if (len <= 0x100) {
-        @branchHint(.likely);
         seed_var = _wmum(wyr8(off(p, 0x00)) ^ seed_var ^ _wyp0, wyr8(off(p, 0x08)) ^ seed_var ^ _wyp1);
         see1 = _wmum(wyr8(off(p, 0x10)) ^ see1 ^ _wyp2, wyr8(off(p, 0x18)) ^ see1 ^ _wyp3);
 
@@ -278,7 +290,6 @@ pub inline fn _whash(data: []const u8, seed: u64) u64 {
         offset = (offset - 1) % 0x20 + 1;
         p = off(p, len - offset);
     } else {
-        @branchHint(.unlikely);
         while (offset > 0x100) : ({
             offset -= 0x100;
             p = off(p, 0x100);

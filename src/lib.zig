@@ -4,6 +4,8 @@ const mem = std.mem;
 const math = std.math;
 const testing = std.testing;
 
+pub const strconv = @import("strconv.zig");
+
 pub const KiB = 1 << 10;
 pub const MiB = 1 << 20;
 pub const GiB = 1 << 30;
@@ -228,8 +230,6 @@ test "charToDigit table" {
     try std.testing.expectError(error.InvalidCharacter, charToDigit(' ', 10));
 }
 
-pub const SPSC = @import("spscqueue_ring_buffer.zig");
-
 pub const prng = @import("prng.zig");
 
 pub const RingBuffer = @import("ring_buffer.zig").RingBuffer;
@@ -247,12 +247,6 @@ pub const SmallSizeArenaAllocator = @import("ArenaAllocator.zig").ArenaAllocator
 
 pub const Pool = @import("pool.zig").Growing;
 
-pub const ThreadPool = @import("threadpool.zig");
-
-pub const BinaryFuse = @import("binary_fuse_filter.zig");
-
-pub const BinaryFuseu8 = BinaryFuse.BinaryFuse(u8);
-
 const native_endian = builtin.cpu.arch.endian();
 
 const has_avx2 = std.Target.x86.featureSetHas(builtin.cpu.features, .avx2);
@@ -265,7 +259,7 @@ test {
 //
 //
 // Set the affinity of the current thread to the given CPU.
-pub fn setYadro(cpu: usize) void {
+pub inline fn setYadro(cpu: usize) void {
     var cpu_set: std.os.linux.cpu_set_t = undefined;
     @memset(&cpu_set, 0);
 
