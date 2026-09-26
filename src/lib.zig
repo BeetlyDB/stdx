@@ -125,8 +125,24 @@ pub fn parseUnsigned(comptime T: type, buf: []const u8, base: u8) !T {
 
 pub const ptrs = @import("ptrs.zig");
 
-pub fn parseInt(comptime T: type, buf: []const u8, base: u8) !T {
+pub fn _parseInt(comptime T: type, buf: []const u8, base: u8) !T {
     return parseIntWithGenericCharacter(T, u8, buf, base);
+}
+
+pub inline fn parseInt(comptime T: type, buf: []const u8, base: u8) strconv.ParseError!T {
+    if (base == 10) {
+        if (comptime @typeInfo(T).int.signedness == .unsigned) {
+            if (buf.len > 0 and buf[0] == '+') {
+                if (buf.len == 1) return error.InvalidString;
+                return strconv.parse_uint(T, buf[1..]);
+            }
+            if (buf.len > 0 and buf[0] == '-') return error.InvalidCharacter;
+            return strconv.parse_uint(T, buf);
+        }
+        return strconv.parse_int(T, buf);
+    }
+
+    return _parseInt(T, buf, base);
 }
 
 /// Like `parseInt`, but with a generic `Character` type.
