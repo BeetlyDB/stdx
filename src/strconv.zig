@@ -125,6 +125,27 @@ pub inline fn format_uint(comptime T: type, dst: []u8, v: T) usize {
 
     const dstlen = dst.len;
     var value: u64 = @as(u64, v);
+
+    if (value < 100) {
+        if (value < 10) {
+            if (dstlen < 1) {
+                @branchHint(.cold);
+                return 0;
+            }
+            dst[0] = '0' + @as(u8, @intCast(value));
+            return 1;
+        }
+        if (dstlen < 2) {
+            @branchHint(.cold);
+            if (dstlen > 0) dst[0] = 0;
+            return 0;
+        }
+        const i: usize = @intCast(value * 2);
+        dst[0] = digits[i];
+        dst[1] = digits[i + 1];
+        return 2;
+    }
+
     const length = digits10(value);
 
     if (length > dstlen) {

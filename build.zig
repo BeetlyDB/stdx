@@ -1,53 +1,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-fn addDep(
-    artifact: *std.Build.Step.Compile,
-    b: *std.Build,
-) void {
-    const has_avx2 = std.Target.x86.featureSetHas(builtin.cpu.features, .avx2);
-    if (has_avx2) {
-        const asm_step = b.addSystemCommand(&.{
-            "zig",
-            "cc",
-            "-c",
-            "src/asm_folly.S",
-            "-o",
-            "src/folly.o",
-            "-D__AVX2__",
-            // "-DFOLLY_MEMCPY_IS_MEMCPY",
-            "-mtune=native",
-            "-fno-exceptions",
-            "-g0",
-        });
-        artifact.step.dependOn(&asm_step.step);
-        artifact.addObjectFile(b.path("src/folly.o"));
-
-        const asm_step2 = b.addSystemCommand(&.{
-            "zig",
-            "cc",
-            "-c",
-            "src/asm_folly_memset.S",
-            "-o",
-            "src/folly_memset.o",
-            "-D__AVX2__",
-            // "-DFOLLY_MEMCPY_IS_MEMCPY",
-            "-mtune=native",
-            "-fno-exceptions",
-            "-g0",
-        });
-        artifact.step.dependOn(&asm_step2.step);
-        artifact.addObjectFile(b.path("src/folly_memset.o"));
-    }
-}
-
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    // const optimize = b.standardOptimizeOption(.{});
     const lib_mod = b.createModule(.{
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
-        .optimize = optimize,
+        .optimize = .ReleaseFast,
     });
 
     const has_avx2 = std.Target.x86.featureSetHas(builtin.cpu.features, .avx2);
@@ -64,7 +24,6 @@ pub fn build(b: *std.Build) void {
         .root_module = lib_mod,
         .use_llvm = true,
     });
-    // addDep(lib, b);
     b.installArtifact(lib);
 
     const bench_mod = b.createModule(.{
