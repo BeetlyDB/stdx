@@ -39,41 +39,28 @@ const digits = [_]u8{
     '9', '0', '9', '1', '9', '2', '9', '3', '9', '4', '9', '5', '9', '6', '9', '7', '9', '8', '9', '9',
 };
 
+const Digits10Bound = struct { d: u32, thr: u64 };
+
+const digits10_tab = blk: {
+    @setEvalBranchQuota(10_000);
+    var t: [64]Digits10Bound = undefined;
+    for (0..64) |lg| {
+        const v: u64 = @as(u64, 1) << @intCast(lg);
+        var d: u32 = 1;
+        var x = v / 10;
+        while (x > 0) : (x /= 10) d += 1;
+        var thr: u64 = 1;
+        var k: u32 = 0;
+        while (k < d) : (k += 1) thr *= 10;
+        t[lg] = .{ .d = d, .thr = thr };
+    }
+    break :blk t;
+};
+
 inline fn digits10(v: u64) u32 {
-    if (v < 10) {
-        return 1;
-    }
-    if (v < 100) {
-        return 2;
-    }
-    if (v < 1000) {
-        return 3;
-    }
-    if (v < 1_000_000_000_000) {
-        if (v < 100_000_000) {
-            if (v < 1_000_000) {
-                if (v < 10_000) {
-                    return 4;
-                }
-                return std.math.add(u32, 5, @intFromBool(v >= 100_000)) catch unreachable;
-            }
-            return std.math.add(u32, 7, @intFromBool(v >= 10_000_000)) catch unreachable;
-        }
-        if (v < 10_000_000_000) {
-            return std.math.add(u32, 9, @intFromBool(v >= 1_000_000_000)) catch unreachable;
-        }
-        return std.math.add(u32, 11, @intFromBool(v >= 100_000_000_000)) catch unreachable;
-    }
-    if (v < 10_000_000_000_000_000) {
-        if (v < 100_000_000_000_000) {
-            return std.math.add(u32, 13, @intFromBool(v >= 10_000_000_000_000)) catch unreachable;
-        }
-        return std.math.add(u32, 15, @intFromBool(v >= 1_000_000_000_000_000)) catch unreachable;
-    }
-    if (v < 1_000_000_000_000_000_000) {
-        return std.math.add(u32, 17, @intFromBool(v >= 100_000_000_000_000_000)) catch unreachable;
-    }
-    return std.math.add(u32, 19, @intFromBool(v >= 10_000_000_000_000_000_000)) catch unreachable;
+    const lg: usize = 63 ^ @as(usize, @clz(v | 1));
+    const e = digits10_tab[lg];
+    return e.d + @as(u32, @intFromBool(v >= e.thr));
 }
 
 pub inline fn sum_overflows(comptime Int: type, a: Int, b: Int) bool {
