@@ -15,17 +15,6 @@ const cutoffNegMod10 = cutoff_neg % 10;
 const cutoffPosDiv10 = cutoff_no_neg / 10;
 const cutoffPosMod10 = cutoff_no_neg % 10;
 
-const digits3 = blk: {
-    var table: [1000]u32 = undefined;
-    for (0..1000) |i| {
-        const a: u8 = '0' + @as(u8, @intCast(i / 100));
-        const b: u8 = '0' + @as(u8, @intCast((i / 10) % 10));
-        const c: u8 = '0' + @as(u8, @intCast(i % 10));
-        table[i] = (@as(u32, a) << 16) | (@as(u32, b) << 8) | @as(u32, c);
-    }
-    break :blk table;
-};
-
 const digits = [_]u8{
     '0', '0', '0', '1', '0', '2', '0', '3', '0', '4', '0', '5', '0', '6', '0', '7', '0', '8', '0', '9',
     '1', '0', '1', '1', '1', '2', '1', '3', '1', '4', '1', '5', '1', '6', '1', '7', '1', '8', '1', '9',
@@ -39,28 +28,31 @@ const digits = [_]u8{
     '9', '0', '9', '1', '9', '2', '9', '3', '9', '4', '9', '5', '9', '6', '9', '7', '9', '8', '9', '9',
 };
 
-const Digits10Bound = struct { d: u32, thr: u64 };
-
-const digits10_tab = blk: {
+const digits3 = blk: {
     @setEvalBranchQuota(10_000);
-    var t: [64]Digits10Bound = undefined;
-    for (0..64) |lg| {
-        const v: u64 = @as(u64, 1) << @intCast(lg);
-        var d: u32 = 1;
-        var x = v / 10;
-        while (x > 0) : (x /= 10) d += 1;
-        var thr: u64 = 1;
-        var k: u32 = 0;
-        while (k < d) : (k += 1) thr *= 10;
-        t[lg] = .{ .d = d, .thr = thr };
+    var table: [1000]u32 = undefined;
+    for (0..1000) |i| {
+        const a: u8 = '0' + @as(u8, @intCast(i / 100));
+        const b: u8 = '0' + @as(u8, @intCast((i / 10) % 10));
+        const c: u8 = '0' + @as(u8, @intCast(i % 10));
+        table[i] = (@as(u32, a) << 16) | (@as(u32, b) << 8) | @as(u32, c);
     }
-    break :blk t;
+    break :blk table;
+};
+
+const pow10_tab = [_]u64{
+    1,                     10,                     100,                     1000,
+    10000,                 100000,                 1000000,                 10000000,
+    100000000,             1000000000,             10000000000,             100000000000,
+    1000000000000,         10000000000000,         100000000000000,         1000000000000000,
+    10000000000000000,     100000000000000000,     1000000000000000000,     10000000000000000000,
 };
 
 inline fn digits10(v: u64) u32 {
-    const lg: usize = 63 ^ @as(usize, @clz(v | 1));
-    const e = digits10_tab[lg];
-    return e.d + @as(u32, @intFromBool(v >= e.thr));
+    const w = v | 1;
+    const bitlen: u32 = 64 - @as(u32, @clz(w));
+    const t: u32 = (bitlen * 1233) >> 12;
+    return t + @intFromBool(w >= pow10_tab[t]);
 }
 
 pub inline fn sum_overflows(comptime Int: type, a: Int, b: Int) bool {
@@ -111,15 +103,15 @@ pub inline fn format_uint(comptime T: type, dst: []u8, v: T) usize {
     comptime assert(@typeInfo(T).int.signedness == .unsigned);
 
     const dstlen = dst.len;
-    var value: u64 = @as(u64, v);
+    const value0: u64 = @as(u64, v);
 
-    if (value < 100) {
-        if (value < 10) {
+    if (value0 < 100) {
+        if (value0 < 10) {
             if (dstlen < 1) {
                 @branchHint(.cold);
                 return 0;
             }
-            dst[0] = '0' + @as(u8, @intCast(value));
+            dst[0] = '0' + @as(u8, @intCast(value0));
             return 1;
         }
         if (dstlen < 2) {
@@ -127,13 +119,25 @@ pub inline fn format_uint(comptime T: type, dst: []u8, v: T) usize {
             if (dstlen > 0) dst[0] = 0;
             return 0;
         }
-        const i: usize = @intCast(value * 2);
-        dst[0] = digits[i];
-        dst[1] = digits[i + 1];
+        const i: usize = @intCast(value0 * 2);
+        dst[0..2].* = digits[i..][0..2].*;
         return 2;
     }
 
-    const length = digits10(value);
+    if (value0 < 1000) {
+        if (dstlen < 3) {
+            @branchHint(.cold);
+            if (dstlen > 0) dst[0] = 0;
+            return 0;
+        }
+        const t = digits3[@intCast(value0)];
+        dst[0] = @truncate(t >> 16);
+        dst[1] = @truncate(t >> 8);
+        dst[2] = @truncate(t);
+        return 3;
+    }
+
+    const length = digits10(value0);
 
     if (length > dstlen) {
         @branchHint(.cold);
@@ -141,30 +145,50 @@ pub inline fn format_uint(comptime T: type, dst: []u8, v: T) usize {
         return 0;
     }
 
+    var value = value0;
     var next: usize = length;
 
-    while (value >= 1000) {
-        const r = value % 1000;
-        value /= 1000;
-        next -= 3;
+    while (value >= 100_000_000) {
+        const q = value / 100_000_000;
+        const rem: u32 = @intCast(value - 100_000_000 * q);
+        value = q;
 
+        const c = rem % 10000;
+        const d = rem / 10000;
+        const c0: usize = @intCast((c % 100) * 2);
+        const c1: usize = @intCast((c / 100) * 2);
+        const d0: usize = @intCast((d % 100) * 2);
+        const d1: usize = @intCast((d / 100) * 2);
+
+        next -= 8;
+        dst[next + 0 ..][0..2].* = digits[d1..][0..2].*;
+        dst[next + 2 ..][0..2].* = digits[d0..][0..2].*;
+        dst[next + 4 ..][0..2].* = digits[c1..][0..2].*;
+        dst[next + 6 ..][0..2].* = digits[c0..][0..2].*;
+    }
+
+    var v2: u32 = @intCast(value);
+
+    while (v2 >= 1000) {
+        const r = v2 % 1000;
+        v2 /= 1000;
+        next -= 3;
         const t = digits3[@intCast(r)];
         dst[next] = @truncate(t >> 16);
         dst[next + 1] = @truncate(t >> 8);
         dst[next + 2] = @truncate(t);
     }
 
-    if (value < 10) {
+    if (v2 < 10) {
         next -= 1;
-        dst[next] = '0' + @as(u8, @intCast(value));
-    } else if (value < 100) {
+        dst[next] = '0' + @as(u8, @intCast(v2));
+    } else if (v2 < 100) {
         next -= 2;
-        const i: usize = @intCast(value * 2);
-        dst[next] = digits[i];
-        dst[next + 1] = digits[i + 1];
+        const i: usize = @intCast(v2 * 2);
+        dst[next..][0..2].* = digits[i..][0..2].*;
     } else {
         next -= 3;
-        const t = digits3[@intCast(value)];
+        const t = digits3[@intCast(v2)];
         dst[next] = @truncate(t >> 16);
         dst[next + 1] = @truncate(t >> 8);
         dst[next + 2] = @truncate(t);
